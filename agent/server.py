@@ -1,5 +1,6 @@
 """FastAPI server wrapping the ADK Runner, Google Maps grounding metadata, and BigQuery Admin Explorer."""
 
+import json
 import math
 import os
 import re
@@ -10,6 +11,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from google import genai
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -391,6 +393,65 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
     )
+
+
+def _sse(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def chat_stream_endpoint(req: ChatRequest):
+    """Same as /api/chat, but streams progress so the UI can show what the agent is doing:
+    {"type":"step","tool":...} when a specialist/tool starts, {"type":"step_done",...} when it returns,
+    then {"type":"final", ...ChatResponse fields}."""
+    user_id = "emergency-manager"
+    session_id = req.session_id or "default-session"
+
+    async def events():
+        t0 = time.time()
+        tools_called: List[str] = []
+        texts: List[str] = []
+        grounding_chunks: List[MapsGroundingChunk] = []
+        seen_uris: set = set()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+                await client.post(
+                    f"{DEPLOYED_AGENT_URL}/apps/{DEPLOYED_AGENT_APP}/users/{user_id}/sessions/{session_id}", json={})
+                body = {"appName": DEPLOYED_AGENT_APP, "userId": user_id, "sessionId": session_id,
+                        "newMessage": {"role": "user", "parts": [{"text": req.message}]}}
+                async with client.stream("POST", f"{DEPLOYED_AGENT_URL}/run_sse", json=body) as resp:
+                    if resp.status_code != 200:
+                        detail = (await resp.aread()).decode(errors="replace")[:300]
+                        yield _sse({"type": "error", "message": f"Agent error ({resp.status_code}): {detail}"})
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            ev = json.loads(line[5:].strip())
+                        except json.JSONDecodeError:
+                            continue
+                        for part in (ev.get("content") or {}).get("parts") or []:
+                            if part.get("functionCall"):
+                                name = part["functionCall"].get("name")
+                                if name and name not in tools_called:
+                                    tools_called.append(name)
+                                yield _sse({"type": "step", "tool": name})
+                            elif part.get("functionResponse"):
+                                yield _sse({"type": "step_done", "tool": part["functionResponse"].get("name")})
+                            elif part.get("text") and not part.get("thought") and not ev.get("partial"):
+                                texts.append(part["text"])
+                        _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
+            reply_text = texts[-1].strip() if texts else "I couldn't produce an answer that time. Please try again."
+            _extract_maps_sources_from_text(reply_text, seen_uris, grounding_chunks)
+            yield _sse({"type": "final", "reply": reply_text, "tools_called": tools_called,
+                        "elapsed_seconds": round(time.time() - t0, 1),
+                        "grounding_chunks": [c.model_dump() for c in grounding_chunks]})
+        except Exception as exc:  # surface any failure to the UI instead of hanging
+            yield _sse({"type": "error", "message": str(exc)[:300]})
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _flag_label(val: Any) -> str:

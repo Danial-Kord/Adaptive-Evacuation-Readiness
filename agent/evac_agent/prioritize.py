@@ -92,8 +92,13 @@ def rank_priority_tracts(tool_context: ToolContext, county: str = "", top_n: int
         r["main_need"] = NEED_LABEL[main]
         r["points"] = {k: r.pop(FACTORS[k][0]) for k in FACTORS}
         r["place"] = f"near {r.pop('near_city')}, {r['county_name']} County (tract {r['geo_id']})"
+    names = {"no_car": "households without a car", "older": "residents 65+", "disability": "adults with a mobility "
+             "disability", "mobile_homes": "mobile homes", "flood": "coastal-flood exposure"}
+    parts = [f"{names[k]} x{w[k]:g}" for k in FACTORS if w[k]] + [f"{names[k]} ignored" for k in FACTORS if not w[k]]
+    weights_sentence = "Weights in use: " + ", ".join(parts) + "." + (
+        " (Default: households without a car count double; everything else counts once.)" if w == DEFAULT_WEIGHTS else "")
     return {
-        "scope": scope, "weights_used": w,
+        "scope": scope, "weights_used": w, "weights_sentence": weights_sentence,
         "evacuation_zone_totals": zone,
         "tracts": rows,
         "how_points_work": "0-100 = statewide percentile (100 = highest in Florida). Priority points = weighted "

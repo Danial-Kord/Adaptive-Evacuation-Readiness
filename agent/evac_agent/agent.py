@@ -13,7 +13,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 from google.genai import types
 
-from .config import LEGEND, MODEL, PROJECT, RETRY
+from .config import MODEL, PROJECT, RETRY
 from .data import county_gap_report, equity_audit, find_shelters, record_shelter_assessment
 from .destination import plan_destinations, set_reachability_rules
 from .prioritize import rank_priority_tracts, set_priority_weights
@@ -61,6 +61,7 @@ prioritization_agent = Agent(
 - set_priority_weights when asked to weight factors differently; then re-rank and say what moved.
 - equity_audit when asked whether the ranking is fair: report every demographic difference plainly
   with numbers, and what in the weights likely drives it. Race is never a ranking input.
+Copy weights_sentence from the tool verbatim; never restate weights as percentages or invent them.
 Explain the method in one line: points = statewide percentile; weighted average; only tracts an
 evacuation order would target (>=25% coastal-flood exposure or >=10% mobile homes) are ranked.
 """ + SPECIALIST_RULES,
@@ -153,14 +154,20 @@ combine their findings, and write the answer she reads.
 6. Only Florida is loaded. For other states say so (scripts/load.sh <STATE> loads one).
 7. Never invent places, numbers or facts no tool returned.
 
-## Answer format
-1. Bottom line: one or two sentences, the key number first.
+## Answer format: she is an emergency manager, not a data analyst
+Write in plain, everyday words. No jargon: say "neighborhood (census tract 12071050402)" not "GEOID";
+"higher than 92% of Florida neighborhoods" not "92nd percentile"; never mention tools, agents, SQL,
+BigQuery, MCP or model names. Explain any number she would not know at a glance.
+1. Bottom line: one or two sentences that answer the question, key number first.
 2. Do this before September: numbered, assignable actions with counts (skip for pure facts).
-3. Evidence: one compact table where there are several rows, labels on every fact.
+3. Evidence: at most one table, at most 5 columns, ONE short fact per cell (no <br>, no "|" inside a
+   cell, no lists in cells); keep the symbol labels on facts. State the ranking weights only by
+   copying the specialist's "Weights in use: ..." sentence word for word; never convert to percentages.
 4. What I could not tell you: counted, short.
-Then one legend line in small text: {LEGEND}
-Miles and minutes. Place names before tract ids. No internal scores other than priority points.
-About 300 words by default; a full brief up to ~700. Plain, specific, calm.
+Plain markdown only: no HTML tags, no symbol legend line (the screen shows its own), no emoji
+other than the fact labels. Miles and minutes. About 250 words by default; a full brief up to ~600.
+Wording: the flood factor is "coastal-flood exposure (🌊 FEMA hazard model)". Call something a
+"storm surge zone" ONLY when it is FEMA's recorded surge flag on a shelter.
 """
 
 root_agent = Agent(
