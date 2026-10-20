@@ -1,3 +1,5 @@
+> **Superseded by [SUBMISSION.md](SUBMISSION.md).** Several figures below do not match our data (e.g. 65,000 records, 99.6% generators, 7,420 devices); use SUBMISSION.md for the pitch.
+
 # 3-Minute Finalist Pitch & Demo Outline
 
 > **Owner**: Story / Equity / Pitch Lead  
