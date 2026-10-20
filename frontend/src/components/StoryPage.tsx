@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { HeroArt, Theme } from "./HeroArt";
 
 /* The main page: the county's readiness story, told as the three questions a manager asks.
    Data comes from /api/story/*, which calls the same tools the assistant uses. */
@@ -85,7 +86,7 @@ function StoryMap({ tracts, shelters, selected, onSelect }: {
   );
 }
 
-export function StoryPage({ county, onAsk }: { county: { name: string; fips: string }; onAsk: (q: string) => void }) {
+export function StoryPage({ county, onAsk, theme = "base" }: { county: { name: string; fips: string }; onAsk: (q: string) => void; theme?: Theme }) {
   const [pri, setPri] = useState<Any | null>(null);
   const [quality, setQuality] = useState<Any | null>(null);
   const [gaps, setGaps] = useState<Any | null>(null);
@@ -94,9 +95,12 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
   const [dest, setDest] = useState<Record<string, { data?: Any; live: boolean; error?: string }>>({});
   const [verify, setVerify] = useState<{ loading: boolean; data?: Any; error?: string }>({ loading: false });
   const [error, setError] = useState<string | null>(null);
+  // Live Google Maps accessibility sweep over never-recorded shelters. Shown on screen only:
+  // Google Maps content may not be stored (only place_id is kept).
+  const [sweep, setSweep] = useState<{ running: boolean; done: number; total: number; yes: number; no: number; notListed: number; failed: number; at?: string } | null>(null);
 
   useEffect(() => {
-    setPri(null); setQuality(null); setGaps(null); setShelters([]); setSelected(undefined); setDest({}); setVerify({ loading: false }); setError(null);
+    setPri(null); setQuality(null); setGaps(null); setShelters([]); setSelected(undefined); setDest({}); setVerify({ loading: false }); setError(null); setSweep(null);
     const c = encodeURIComponent(county.name);
     getJSON(`/api/story/priorities?county=${c}&top_n=6`).then((d) => { setPri(d); setSelected(d.tracts?.[0]?.geo_id); }).catch((e) => setError(String(e)));
     getJSON(`/api/story/quality?county=${c}`).then(setQuality).catch(() => {});
@@ -136,44 +140,126 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
       .catch((e) => setVerify({ loading: false, error: String(e) }));
   };
 
-  const checklist = gaps ? [
+  const runAccessSweep = async () => {
+    const ids = shelters.filter((x) => x.wheelchair_status === "UNRECORDED").map((x) => Number(x.shelter_id));
+    if (!ids.length) return;
+    const batches: number[][] = [];
+    for (let k = 0; k < ids.length; k += 8) batches.push(ids.slice(k, k + 8));
+    setSweep({ running: true, done: 0, total: ids.length, yes: 0, no: 0, notListed: 0, failed: 0 });
+    let next = 0;
+    const worker = async () => {
+      while (next < batches.length) {
+        const batch = batches[next++];
+        let res: Any[] = [];
+        try {
+          const d = await getJSON(`/api/story/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shelter_ids: batch }) });
+          res = d.results ?? [];
+        } catch { /* counted as failed below */ }
+        const count = (pred: (v: Any) => boolean) => res.filter(pred).length;
+        setSweep((p) => p && {
+          ...p,
+          done: p.done + batch.length,
+          yes: p.yes + count((v) => v.maps_wheelchair_entrance === "yes"),
+          no: p.no + count((v) => v.maps_wheelchair_entrance === "no"),
+          notListed: p.notListed + count((v) => v.verdict !== "UNVERIFIED" && v.verdict !== "LOOKUP_FAILED" && (!v.maps_wheelchair_entrance || v.maps_wheelchair_entrance === "not listed")),
+          failed: p.failed + (batch.length - res.length) + count((v) => v.verdict === "UNVERIFIED" || v.verdict === "LOOKUP_FAILED"),
+        });
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    setSweep((p) => p && { ...p, running: false, at: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) });
+  };
+
+  const capOf = (x: Any) => Number(x.evacuation_capacity ?? 0);
+  const preLandfall = shelters.filter((x) => x.usage === "EVAC" || x.usage === "BOTH");
+  const statusTag = (v: string) => v === "UNRECORDED" ? <span className="tag unrec">never recorded</span> : v === "YES" ? <span className="tag yes">yes</span> : <span className="tag no">no</span>;
+  type Row = { name: React.ReactNode; meta: React.ReactNode; bar?: number };
+  const worst: Any[] = gaps?.evacuation_zone_tracts_with_no_shelter_within_1_mile?.worst ?? [];
+  const maxNoCar = Math.max(1, ...worst.map((w) => Number(w.hh_no_vehicle) || 0));
+  const exposurePill = (pct: number) =>
+    pct >= 75 ? <span className="tag no">{pct}% exposed · high</span> : pct >= 50 ? <span className="tag unrec">{pct}% exposed · elevated</span> : <span className="tag mild">{pct}% exposed · moderate</span>;
+  const checklist: { title: string; why: string; ask: string; owner: string; rows: Row[]; more?: number }[] = gaps ? [
     {
       title: `Set up pickup points for ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.households_no_vehicle)} households without a car`,
-      why: `They live in ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts)} evacuation-zone neighborhoods with no shelter within a 1-mile walk.`,
+      why: `They live in ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts)} evacuation-zone neighborhoods with no shelter within a 1-mile walk. Start with these:`,
       ask: `Which neighborhoods in ${county.name} County need pickup points for households without a car?`,
+      owner: "Transit / paratransit coordinator",
+      rows: worst.slice(0, 5).map((w: Any) => ({
+        name: <>{w.near_city ? `Near ${w.near_city}` : "Neighborhood"} <small className="muted">tract {w.geo_id}</small></>,
+        meta: <><b>{fmt(w.hh_no_vehicle)}</b> households without a car · nearest shelter <b>{w.miles_nearest_shelter} mi</b> <span className="muted">(about {Math.round(Number(w.miles_nearest_shelter) * 20)} min on foot)</span></>,
+        bar: (Number(w.hh_no_vehicle) || 0) / maxNoCar,
+      })),
+      more: Math.max(0, (gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts ?? 0) - 5),
     },
     {
       title: `Ask ${fmt(quality?.unrecorded_counts?.wheelchair)} shelter operators whether a wheelchair user can get in on their own`,
-      why: "Nobody ever recorded it. Unknown is not the same as \"no\".",
+      why: "Nobody ever recorded it. Unknown is not the same as \"no\". Ask: \"Can a wheelchair user get in and use the shelter on their own, whenever it is open?\" Call the biggest first:",
       ask: `Which ${county.name} County shelters should we ask about wheelchair access first?`,
+      owner: "Shelter operations lead",
+      rows: preLandfall.filter((x) => x.wheelchair_status === "UNRECORDED").sort((a, b) => capOf(b) - capOf(a)).slice(0, 5).map((x) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: <><b>{fmt(capOf(x))}</b> spaces · generator {statusTag(x.generator_status)}</>,
+      })),
+      more: Math.max(0, preLandfall.filter((x) => x.wheelchair_status === "UNRECORDED").length - 5),
     },
     {
       title: `Confirm the building height of ${fmt(gaps.shelters_on_flood_hazard_ground?.on_flood_hazard_ground)} shelters on high flood-risk ground`,
-      why: `${fmt(gaps.shelters_on_flood_hazard_ground?.capacity_on_flood_hazard_ground)} of ${fmt(gaps.shelters_on_flood_hazard_ground?.pre_landfall_capacity)} spaces sit in areas FEMA's model rates as highly exposed to coastal flooding.`,
+      why: `${fmt(gaps.shelters_on_flood_hazard_ground?.capacity_on_flood_hazard_ground)} of ${fmt(gaps.shelters_on_flood_hazard_ground?.pre_landfall_capacity)} spaces sit in areas FEMA's model rates as highly exposed to coastal flooding. The largest:`,
       ask: `Which ${county.name} County shelters sit on high coastal-flood ground?`,
+      owner: "Facilities / school district",
+      rows: (gaps.shelters_on_flood_hazard_ground?.largest ?? []).slice(0, 5).map((x: Any) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: <><b>{fmt(x.capacity)}</b> spaces {exposurePill(Number(x.pct_tract_flood_exposed))}</>,
+      })),
+      more: Math.max(0, (gaps.shelters_on_flood_hazard_ground?.on_flood_hazard_ground ?? 0) - 5),
     },
     {
       title: `Confirm backup power at the ${fmt(power?.medical_needs_shelters)} medical-needs shelters`,
-      why: `${fmt(power?.power_dependent_residents)} residents rely on powered medical equipment (county total); none of these shelters has a generator on record.`,
+      why: `${fmt(power?.power_dependent_residents)} residents rely on powered medical equipment (county total). Generator on record:`,
       ask: `How many people in ${county.name} County depend on electricity for medical equipment, and are the medical shelters ready?`,
+      owner: "Health & medical (ESF-8)",
+      rows: shelters.filter((x) => x.is_medical).sort((a, b) => capOf(b) - capOf(a)).slice(0, 9).map((x) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: <><b>{fmt(capOf(x))}</b> spaces · generator {statusTag(x.generator_status)}</>,
+      })),
     },
     {
       title: `Review evacuation plans for ${fmt(gaps.nursing_homes?.on_flood_hazard_ground)} nursing homes on flood-risk ground`,
-      why: `${fmt(gaps.nursing_homes?.beds_on_flood_hazard_ground)} beds in total.`,
+      why: `${fmt(gaps.nursing_homes?.beds_on_flood_hazard_ground)} beds in total. The largest:`,
       ask: `Which ${county.name} County nursing homes are on flood-risk ground?`,
+      owner: "Long-term care liaison",
+      rows: (gaps.nursing_homes?.largest ?? []).slice(0, 5).map((x: Any) => ({
+        name: <>{String(x.provider_name).toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())} <small className="muted">{String(x.citytown).toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())}</small></>,
+        meta: <><b>{fmt(x.beds)}</b> beds · nearest medical shelter {Number(x.miles_nearest_medical_shelter) > 5 ? <span className="tag no">{x.miles_nearest_medical_shelter} mi</span> : <b>{x.miles_nearest_medical_shelter} mi</b>}</>,
+      })),
+      more: Math.max(0, (gaps.nursing_homes?.on_flood_hazard_ground ?? 0) - 5),
     },
   ] : [];
 
   return (
     <main className="story">
+      {theme === "watch" && (
+        <div className="advisory-ribbon" role="note">
+          <b>HURRICANE SEASON</b> June 1 – November 30 · peak September 10 · planning window: now
+        </div>
+      )}
       <section className="story-hero">
+        <HeroArt theme={theme} />
         <p className="story-eyebrow">Hurricane season planning</p>
         <h1>{county.name} County readiness</h1>
         <p className="story-lede">Who would struggle to leave, where they could go, and how far you can trust the shelter list. Built from federal records and checked live on <span translate="no">Google Maps</span>.</p>
         <div className="story-stats">
           <div><strong>{fmt(zone?.people)}</strong><span>people live where an evacuation order would apply</span></div>
           <div><strong>{fmt(zone?.no_car_households)}</strong><span>of their households have no car</span></div>
-          <div><strong>{quality ? `${quality.unrecorded_counts.wheelchair} of ${quality.unrecorded_counts.shelters}` : "—"}</strong><span>shelters never checked for wheelchair access</span></div>
+          <div className="stat-alert">
+            <span className="alert-badge">Needs attention</span>
+            <strong>{quality ? `${quality.unrecorded_counts.wheelchair} of ${quality.unrecorded_counts.shelters}` : "—"}</strong>
+            <span>shelters never checked for wheelchair access</span>
+            {sweep && !sweep.running && <span className="stat-update"><b>{sweep.yes}</b> of those show an accessible entrance on <span translate="no">Google Maps</span> (checked {sweep.at}, operator still needs to confirm)</span>}
+            <button className="stat-btn" onClick={runAccessSweep} disabled={!shelters.length || sweep?.running}>
+              {sweep?.running ? `Checking on Google Maps… ${sweep.done} of ${sweep.total}` : sweep ? "Check again" : "Check them on Google Maps"}
+            </button>
+          </div>
           <div><strong>{fmt(power?.power_dependent_residents)}</strong><span>residents rely on powered medical equipment (county total)</span></div>
         </div>
         {error && <p className="story-error">Couldn't load the county data. Please refresh. ({error})</p>}
@@ -192,7 +278,7 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
                   <span className="hood-need">{needIcon(t.main_need)} {t.main_need.replace(/^[^:]+: /, "")}</span>
                   <span className="hood-facts">{fmt(t.hh_no_vehicle)} households without a car · {fmt(t.pop_65_plus)} aged 65+ · {fmt(t.mobile_homes)} mobile homes</span>
                 </span>
-                <span className="hood-score"><b>{Math.round(t.priority_points)}</b><small>of 100</small></span>
+                <span className={`hood-score cat-${Math.min(5, Math.max(1, Math.floor((t.priority_points - 50) / 10) + 1))}`}><b>{Math.round(t.priority_points)}</b><small>of 100</small></span>
               </button>
             ))}
             {pri && (
@@ -262,6 +348,19 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
               <li><i className="sw no" />{access.NO} recorded as not accessible</li>
               <li><i className="sw unrecorded" /><b>{access.UNRECORDED} never checked</b>: unknown, not “no”</li>
             </ul>
+            {sweep && (
+              <div className="sweep">
+                <div className="sweep-bar"><span style={{ width: `${Math.round((100 * sweep.done) / Math.max(sweep.total, 1))}%` }} /></div>
+                <p className="sweep-title">{sweep.running ? `Checking never-recorded shelters on Google Maps… ${sweep.done} of ${sweep.total}` : `Live check of ${sweep.total} never-recorded shelters (${sweep.at})`}</p>
+                <ul className="access-legend">
+                  <li><i className="sw yes" /><b>{sweep.yes}</b> show a wheelchair-accessible entrance on <span translate="no">Google Maps</span></li>
+                  <li><i className="sw no" />{sweep.no} say the entrance is not accessible</li>
+                  <li><i className="sw unrecorded" />{sweep.notListed} not listed on <span translate="no">Google Maps</span> either: someone has to ask</li>
+                  {sweep.failed > 0 && <li><i className="sw gray" />{sweep.failed} couldn't be checked right now</li>}
+                </ul>
+                <p className="story-note">An accessible entrance isn't proof that a wheelchair user can use the shelter on their own, so these stay unconfirmed until the operator answers. Google Maps results are shown here, not saved (its terms only allow keeping the place ID).</p>
+              </div>
+            )}
             {quality && <p className="story-note">Generators: {quality.unrecorded_counts.generator} of {quality.unrecorded_counts.shelters} never recorded. Storm-surge flag: {quality.unrecorded_counts.surge_flag} never recorded.</p>}
           </article>
           <article className="trust-card">
@@ -297,13 +396,30 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
       </section>
 
       <section className="story-section checklist">
-        <div className="story-q"><span className="story-num">✓</span><div><h2>Before September</h2><p>What to assign this month.</p></div></div>
+        <div className="story-q"><span className="story-num">✓</span><div><h2>Before September</h2><p>What to assign this month, and exactly where to start.</p></div></div>
         {!gaps && <div className="skeleton tall" />}
         <ol className="todo">
-          {checklist.map((c) => (
+          {checklist.map((c, n) => (
             <li key={c.title}>
-              <div><b>{c.title}</b><span>{c.why}</span></div>
-              <button className="link-btn" onClick={() => onAsk(c.ask)}>Ask →</button>
+              <div className="todo-head">
+                <span className="todo-num">{n + 1}</span>
+                <div><b>{c.title}</b><span>{c.why}</span></div>
+                <span className="todo-owner">Assign to<br /><b>{c.owner}</b></span>
+              </div>
+              {c.rows.length > 0 && (
+                <ul className="todo-list">
+                  {c.rows.map((r, k) => (
+                    <li key={k}>
+                      <span>{r.name}{r.bar !== undefined && <span className="need-bar"><i style={{ width: `${Math.round(r.bar * 100)}%` }} /></span>}</span>
+                      <span className="meta">{r.meta}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="todo-more">
+                {c.more ? <span className="muted">+ {c.more} more · </span> : null}
+                <button className="link-btn" onClick={() => onAsk(c.ask)}>Ask the assistant for more →</button>
+              </div>
             </li>
           ))}
         </ol>

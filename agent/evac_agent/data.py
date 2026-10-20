@@ -234,7 +234,7 @@ def county_gap_report(county: str) -> dict:
     T, S, C, P = table("tract_readiness"), table("shelters_enriched"), table("care_enriched"), table("power_dependent_counties")
     walk = _rows(f"""
         SELECT COUNT(*) tracts, SUM(total_pop) population, SUM(hh_no_vehicle) households_no_vehicle,
-          ARRAY_AGG(STRUCT(geo_id, hh_no_vehicle, ROUND(0.621 * km_nearest_shelter,1) AS miles_nearest_shelter)
+          ARRAY_AGG(STRUCT(geo_id, near_city, hh_no_vehicle, ROUND(0.621 * km_nearest_shelter,1) AS miles_nearest_shelter)
                     ORDER BY hh_no_vehicle DESC LIMIT 8) worst
         FROM {T} WHERE county_fips=@fips AND evacuation_driver IS NOT NULL AND n_within_walk = 0""", fips=fips)[0]
     access = _rows(f"""

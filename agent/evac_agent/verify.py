@@ -196,6 +196,8 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
         "verdict": verdict, "action": action, "flags": flags,
         "google_maps_says": {k: ans.get(k) for k in ("maps_name", "maps_address", "place_type", "business_status", "notes")},
         "accessibility": access,
+        # yes / no / not listed, only when Gemini's grounding metadata cites Google Maps for it.
+        "maps_wheelchair_entrance": maps_wc,
         "maps_accessibility_attributes": ans.get("accessibility_attributes") if maps_wc != "not listed" else None,
         "grounded_fields": sorted(grounded),
         "drive": route,

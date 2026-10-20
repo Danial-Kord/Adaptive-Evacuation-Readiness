@@ -3,6 +3,8 @@ import { ChatPanel } from "./components/ChatPanel";
 import { DataManagementTab } from "./components/DataManagementTab";
 import { PlanningDashboard, PlanningView } from "./components/PlanningDashboard";
 import { StoryPage } from "./components/StoryPage";
+import { HurricaneGlyph, Theme } from "./components/HeroArt";
+import "./themes.css";
 import { COUNTIES } from "./services/dashboardApi";
 import "./story.css";
 
@@ -13,7 +15,14 @@ const ANALYST_NAV: {id: PlanningView | "data"; label: string}[] = [
   {id: "sources", label: "Sources & coverage"}, {id: "data", label: "Data explorer"},
 ];
 
+const THEMES: Theme[] = ["base", "watch", "eye", "chart"];
+const initialTheme = (): Theme => {
+  const t = new URLSearchParams(window.location.search).get("theme") as Theme | null;
+  return t && THEMES.includes(t) ? t : "eye";
+};
+
 export const App: React.FC = () => {
+  const [theme] = useState<Theme>(initialTheme);
   const [page, setPage] = useState<"plan" | "analysts">("plan");
   const [view, setView] = useState<PlanningView | "data">("overview");
   const [countyFips, setCountyFips] = useState("12071");
@@ -22,10 +31,10 @@ export const App: React.FC = () => {
   const county = COUNTIES.find(c => c.fips === countyFips)!;
   const ask = (text: string) => { setQuestion({text, id: Date.now(), send: true}); setChatOpen(true); };
 
-  return <div className="app-shell">
+  return <div className={`app-shell theme-${theme}`}>
     <header className="app-header">
       <a className="app-brand" href="#" onClick={e => { e.preventDefault(); setPage("plan"); }}>
-        <span className="app-logo" aria-hidden="true">◈</span>
+        <span className="app-logo" aria-hidden="true">{theme === "base" ? "◈" : <HurricaneGlyph size={30} />}</span>
         <span><strong>Hurricane Readiness</strong><small>Pre-season planning for county emergency managers</small></span>
       </a>
       <label className="app-county">County
@@ -40,7 +49,7 @@ export const App: React.FC = () => {
       <button className="app-ask" onClick={() => setChatOpen(o => !o)}>✦ {chatOpen ? "Close assistant" : "Ask the assistant"}</button>
     </header>
 
-    {page === "plan" ? <StoryPage county={county} onAsk={ask} /> :
+    {page === "plan" ? <StoryPage county={county} onAsk={ask} theme={theme} /> :
       <div className="analyst-view">
         <nav className="analyst-nav" aria-label="Analyst views">
           {ANALYST_NAV.map(item => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>{item.label}</button>)}

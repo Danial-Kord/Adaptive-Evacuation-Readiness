@@ -1,0 +1,96 @@
+/* Hurricane-themed looks for the story page. Select with ?theme=watch | eye | chart. */
+.story-hero { position: relative; }
+.hero-art { position: absolute; pointer-events: none; }
+.advisory-ribbon { display: none; }
+
+/* ---------- A · Storm Watch: NWS advisory + radar ---------- */
+.theme-watch { --paper: #edf1f6; --header: #0b1d33; --header-soft: #16304f; --gold: #ffb300; --storm: #1565c0; }
+.theme-watch .app-logo { color: #ffb300; }
+.theme-watch .advisory-ribbon { display: block; max-width: 1240px; margin: 18px auto -14px; padding: 10px 18px; border-radius: 10px; background: #e8710a; color: #fff; font-size: 14px; letter-spacing: .3px; box-shadow: 0 2px 6px rgba(232, 113, 10, .3); }
+.theme-watch .advisory-ribbon b { letter-spacing: 1.5px; margin-right: 8px; }
+.theme-watch .story-hero { background: radial-gradient(120% 140% at 85% 10%, #1b3d66 0%, #0b1d33 60%); color: #fff; border-radius: 20px; padding: 34px 36px 30px; overflow: hidden; }
+.theme-watch .story-hero h1 { color: #fff; }
+.theme-watch .story-eyebrow { color: #ffb300; }
+.theme-watch .story-lede { color: #c8d6e8; max-width: 640px; }
+.theme-watch .story-stats { position: relative; z-index: 1; }
+.theme-watch .story-stats > div { background: rgba(255, 255, 255, .07); border: 1px solid rgba(255, 255, 255, .14); }
+.theme-watch .story-stats strong { color: #fff; }
+.theme-watch .story-stats span { color: #b8c7da; }
+.theme-watch .story-stats > div.stat-alert { background: rgba(217, 48, 37, .2); box-shadow: inset 0 0 0 1px rgba(255, 138, 128, .7); }
+.theme-watch .stat-alert strong { color: #ff8a80 !important; }
+.theme-watch .story-stats .stat-update { color: #fff !important; }
+.theme-watch .radar { right: 34px; top: 22px; width: 210px; height: 210px; border-radius: 50%; overflow: hidden; background: radial-gradient(circle, rgba(76, 255, 160, .08), rgba(11, 29, 51, 0) 70%); }
+.theme-watch .radar-rings { position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(110, 255, 170, .35); background: repeating-radial-gradient(circle, transparent 0 34px, rgba(110, 255, 170, .22) 34px 35px), linear-gradient(rgba(110, 255, 170, .18), rgba(110, 255, 170, .18)) center / 1px 100% no-repeat, linear-gradient(rgba(110, 255, 170, .18), rgba(110, 255, 170, .18)) center / 100% 1px no-repeat; }
+.theme-watch .radar-sweep { position: absolute; inset: 0; border-radius: 50%; background: conic-gradient(from 0deg, rgba(110, 255, 170, .45), rgba(110, 255, 170, 0) 70deg); animation: radar-spin 4s linear infinite; }
+.theme-watch .radar-blip { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: #ffb300; box-shadow: 0 0 10px #ffb300; animation: blip 4s ease-out infinite; }
+.radar-blip.b1 { left: 62%; top: 30%; } .radar-blip.b2 { left: 30%; top: 58%; animation-delay: 1.3s !important; } .radar-blip.b3 { left: 70%; top: 70%; animation-delay: 2.6s !important; }
+@keyframes radar-spin { to { transform: rotate(360deg); } }
+@keyframes blip { 0%, 100% { opacity: .2; } 10% { opacity: 1; } }
+/* Priority scores colored like the Saffir-Simpson scale */
+.theme-watch .hood-score small { display: block; margin-top: 3px; }
+.theme-watch .hood-score b { display: inline-block; min-width: 52px; text-align: center; padding: 3px 8px; border-radius: 8px; color: #1b1b1b; }
+.theme-watch .hood-score.cat-1 b { background: #ffe775; } .theme-watch .hood-score.cat-2 b { background: #ffc140; }
+.theme-watch .hood-score.cat-3 b { background: #ff8f20; } .theme-watch .hood-score.cat-4 b { background: #ff6060; }
+.theme-watch .hood-score.cat-5 b { background: #c464d9; color: #fff; }
+.theme-watch .story-num { background: #0b1d33; }
+.theme-watch .rank-pin { background: #e8710a; }
+
+/* ---------- B · Eye of the Storm: ocean teal + rotating spiral ---------- */
+.theme-eye { --paper: #eef5f6; --header: #083d4a; --header-soft: #0e5566; --gold: #ffd166; --storm: #127b8c; --storm-soft: #def1f3; --sky: #0f6f80; }
+.theme-eye .app-logo { color: #ffd166; }
+.theme-eye .story-hero { background: linear-gradient(135deg, #0a4a5c 0%, #127b8c 55%, #2fa3a8 100%); color: #fff; border-radius: 22px; padding: 36px 36px 64px; overflow: hidden; }
+.theme-eye .story-hero::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 46px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 46' preserveAspectRatio='none'%3E%3Cpath d='M0,22 C150,46 300,0 450,20 C600,40 750,6 900,22 C1050,38 1125,14 1200,20 L1200,46 L0,46 Z' fill='%23eef5f6'/%3E%3C/svg%3E") bottom / 100% 100% no-repeat; }
+.theme-eye .story-hero h1 { color: #fff; }
+.theme-eye .story-eyebrow { color: #ffd166; }
+.theme-eye .story-lede { color: #d6f0f2; max-width: 640px; }
+.theme-eye .story-stats { position: relative; z-index: 1; }
+.theme-eye .story-stats > div { background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .2); backdrop-filter: blur(2px); }
+.theme-eye .story-stats strong { color: #fff; }
+.theme-eye .story-stats span { color: #d6f0f2; }
+.theme-eye .story-stats > div.stat-alert { background: rgba(255, 255, 255, .92); box-shadow: inset 0 0 0 2px #ff6b5e; }
+.theme-eye .story-stats .stat-alert > span:not(.alert-badge) { color: #4b5567; }
+.theme-eye .eye { right: -60px; top: -70px; width: 420px; height: 420px; }
+.theme-eye .eye-spiral { width: 100%; height: 100%; animation: eye-spin 60s linear infinite; }
+@keyframes eye-spin { to { transform: rotate(-360deg); } }
+.theme-eye .story-num { background: #127b8c; }
+.theme-eye .rank-pin { background: #127b8c; }
+.theme-eye .rank-pin.selected { background: #083d4a; }
+.theme-eye .hood-card.selected { border-color: #127b8c; box-shadow: 0 0 0 3px #def1f3; }
+.theme-eye .hood-rank { background: #def1f3; color: #0f6f80; }
+.theme-eye .hood-card.selected .hood-rank { background: #127b8c; color: #fff; }
+
+/* ---------- C · Tracking Chart: plotting grid + storm track ---------- */
+.theme-chart { --paper: #fbf9f3; --header: #1d2b3a; --header-soft: #2b3d51; --gold: #c0392b; --storm: #c0392b; --storm-soft: #fbeae8; --sky: #2a5caa; }
+.theme-chart.app-shell { background-color: #fbf9f3; background-image:
+  linear-gradient(rgba(42, 92, 170, .12) 1px, transparent 1px), linear-gradient(90deg, rgba(42, 92, 170, .12) 1px, transparent 1px),
+  linear-gradient(rgba(42, 92, 170, .05) 1px, transparent 1px), linear-gradient(90deg, rgba(42, 92, 170, .05) 1px, transparent 1px);
+  background-size: 240px 240px, 240px 240px, 48px 48px, 48px 48px; }
+.theme-chart .app-ask { color: #fff; }
+.theme-chart .app-logo { color: #ff8a65; }
+.theme-chart .story-hero h1, .theme-chart .story-q h2 { font-family: "Barlow Condensed", "Oswald", Arial Narrow, sans-serif; text-transform: uppercase; letter-spacing: .5px; font-weight: 700; }
+.theme-chart .story-hero h1 { font-size: 54px; }
+.theme-chart .story-q h2 { font-size: 32px; }
+.theme-chart .story-eyebrow { color: #c0392b; }
+.theme-chart .story-lede { max-width: 600px; }
+.theme-chart .track { right: 0; top: -6px; width: 46%; height: 250px; }
+.theme-chart .track-svg { width: 100%; height: 100%; }
+.theme-chart .track-dot { position: absolute; transform: translate(-50%, -50%); display: grid; place-items: center; }
+.theme-chart .track-open { width: 12px; height: 12px; border-radius: 50%; border: 3px solid #c0392b; background: #fbf9f3; display: block; }
+.theme-chart .track-label { position: absolute; right: 8px; top: 8px; font: 700 13px "Barlow Condensed", Arial Narrow, sans-serif; letter-spacing: 1px; text-transform: uppercase; color: #c0392b; background: #fbf9f3; padding: 2px 8px; border: 1px solid rgba(192, 57, 43, .4); }
+.theme-chart .story-stats { position: relative; z-index: 1; }
+.theme-chart .story-section, .theme-chart .story-stats > div { background: rgba(255, 255, 255, .94); }
+.theme-chart .story-stats > div.stat-alert { background: repeating-linear-gradient(-45deg, #fff6e8 0 14px, #ffe9cc 14px 28px); box-shadow: inset 0 0 0 2px #1d2b3a; }
+.theme-chart .story-stats > div > .alert-badge { background: #1d2b3a; color: #ffd54f; }
+.theme-chart .story-num { background: #c0392b; border-radius: 6px; }
+.theme-chart .rank-pin { background: #c0392b; }
+.theme-chart .rank-pin.selected { background: #1d2b3a; }
+.theme-chart .hood-card.selected { border-color: #c0392b; box-shadow: 0 0 0 3px #fbeae8; }
+.theme-chart .hood-rank { background: #fbeae8; color: #c0392b; }
+.theme-chart .hood-card.selected .hood-rank { background: #c0392b; color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep, .radar-blip, .eye-spiral { animation: none !important; }
+}
+@media (max-width: 1000px) {
+  .hero-art { opacity: .35; }
+}
