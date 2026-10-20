@@ -111,28 +111,20 @@ function renderMarkdownBlocks(markdown: string, stacked = false): React.ReactNod
       continue;
     }
 
-    // Markdown table block
-    if (
-      line.trim().startsWith("|") &&
-      i + 1 < lines.length &&
-      /^\s*\|[\s:-]+\|/.test(lines[i + 1])
-    ) {
-      const headerCells = line
-        .trim()
-        .replace(/^\||\|$/g, "")
-        .split(/(?<!\\)\|/)
-        .map((c) => c.replace(/\\\|/g, "|").trim());
-      i += 2; // skip header + separator line
-      const rows: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        const rowCells = lines[i]
-          .trim()
-          .replace(/^\||\|$/g, "")
-          .split(/(?<!\\)\|/)
-          .map((c) => c.replace(/\\\|/g, "|").trim());
-        rows.push(rowCells);
+    // Markdown table block. Forgiving on purpose: the model sometimes drops the "| --- |" separator
+    // or puts blank lines between rows, so any run of "|...|" lines becomes a table.
+    const isRow = (l: string) => /^\s*\|.*\|\s*$/.test(l);
+    const isSeparator = (l: string) => /^\s*\|?[\s:|-]+\|?\s*$/.test(l) && l.includes("-");
+    const splitRow = (l: string) =>
+      l.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, "|").trim());
+    if (isRow(line)) {
+      const tableLines: string[] = [];
+      while (i < lines.length && (isRow(lines[i]) || (!lines[i].trim() && i + 1 < lines.length && isRow(lines[i + 1])))) {
+        if (lines[i].trim() && !isSeparator(lines[i])) tableLines.push(lines[i]);
         i++;
       }
+      const headerCells = splitRow(tableLines[0] ?? "");
+      const rows: string[][] = tableLines.slice(1).map(splitRow);
       if (stacked) {
         // Narrow panel: one card per row ("Header: value"), so nothing wraps letter by letter.
         blocks.push(
