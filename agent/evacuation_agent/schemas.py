@@ -51,7 +51,7 @@ class ShelterCandidateItem(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    county: Optional[str] = "Miami-Dade"
+    county: Optional[str] = "Lee"
     state: Optional[str] = "FL"
     session_id: Optional[str] = "default-session"
 
@@ -60,4 +60,7 @@ class ChatResponse(BaseModel):
     reply: str
     county: str
     state: str
+    tools_called: List[str] = Field(default_factory=list)
+    elapsed_seconds: Optional[float] = None
+    agent_url: Optional[str] = None
     grounding_chunks: List[MapsGroundingChunk] = Field(default_factory=list)

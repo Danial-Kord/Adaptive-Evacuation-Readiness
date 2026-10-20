@@ -80,5 +80,8 @@ export interface ChatResponse {
   reply: string;
   county: string;
   state: string;
+  tools_called?: string[];
+  elapsed_seconds?: number;
+  agent_url?: string;
   grounding_chunks: MapsGroundingChunk[];
 }

@@ -2,8 +2,10 @@
 
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,12 @@ from evacuation_agent.schemas import ChatRequest, ChatResponse, MapsGroundingChu
 _AGENT_DIR = Path(__file__).resolve().parent
 load_dotenv(_AGENT_DIR / ".env")
 load_dotenv(_AGENT_DIR.parent / ".env")
+
+DEPLOYED_AGENT_URL = os.environ.get(
+    "DEPLOYED_AGENT_URL",
+    "https://evac-readiness-agent-861336771001.us-east1.run.app",
+).rstrip("/")
+DEPLOYED_AGENT_APP = os.environ.get("DEPLOYED_AGENT_APP", "evac_agent")
 
 app = FastAPI(
     title="Adaptive Evacuation Readiness ADK API",
@@ -266,59 +274,106 @@ async def query_bigquery_table_rows(
 
 
 
+def _extract_maps_sources_recursive(
+    obj: Any, seen_uris: set, out: List[MapsGroundingChunk]
+) -> None:
+    """Recursively find google_maps_sources or maps grounding chunks in ADK event dicts."""
+    if isinstance(obj, dict):
+        if "google_maps_sources" in obj and isinstance(obj["google_maps_sources"], list):
+            for src in obj["google_maps_sources"]:
+                if isinstance(src, dict) and src.get("uri"):
+                    uri = str(src["uri"])
+                    if uri not in seen_uris:
+                        seen_uris.add(uri)
+                        out.append(
+                            MapsGroundingChunk(
+                                place_id=src.get("place_id") or src.get("placeId"),
+                                title=src.get("title") or "Google Maps Place",
+                                uri=uri,
+                            )
+                        )
+        if "maps" in obj and isinstance(obj["maps"], dict):
+            m = obj["maps"]
+            uri = m.get("uri")
+            if uri and uri not in seen_uris:
+                seen_uris.add(uri)
+                out.append(
+                    MapsGroundingChunk(
+                        place_id=m.get("placeId") or m.get("place_id"),
+                        title=m.get("title") or "Google Maps Place",
+                        uri=str(uri),
+                    )
+                )
+        for v in obj.values():
+            _extract_maps_sources_recursive(v, seen_uris, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_maps_sources_recursive(item, seen_uris, out)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest) -> ChatResponse:
-    """Run a turn against the ADK agent and return both text and Google Maps grounding chunks."""
+    """Forward chat turns to the deployed Cloud Run ADK service (`evac_agent`) and extract tools + Maps sources."""
     user_id = "emergency-manager"
     session_id = req.session_id or "default-session"
+    t0 = time.time()
 
-    session = await session_service.get_session(
-        app_name=APP_NAME, user_id=user_id, session_id=session_id
-    )
-    if session is None:
-        session = await session_service.create_session(
-            app_name=APP_NAME, user_id=user_id, session_id=session_id
-        )
-
-    contextual_prompt = f"[Context: State={req.state}, County={req.county}] {req.message}"
-    new_message = types.Content(
-        role="user", parts=[types.Part.from_text(text=contextual_prompt)]
-    )
-
-    reply_parts: List[str] = []
+    tools_called: List[str] = []
+    texts: List[str] = []
     grounding_chunks: List[MapsGroundingChunk] = []
-    seen_uris = set()
+    seen_uris: set = set()
 
     try:
-        async for event in runner.run_async(
-            user_id=user_id, session_id=session.id, new_message=new_message
-        ):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text and event.is_final_response():
-                        reply_parts.append(part.text)
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            # Ensure session exists on Cloud Run ADK server (ignore 400/409 if already created)
+            sess_url = f"{DEPLOYED_AGENT_URL}/apps/{DEPLOYED_AGENT_APP}/users/{user_id}/sessions/{session_id}"
+            await client.post(sess_url, json={})
 
-            # Extract Google Maps grounding chunks for required UI attribution
-            gm = getattr(event, "grounding_metadata", None)
-            if gm and getattr(gm, "grounding_chunks", None):
-                for ch in gm.grounding_chunks:
-                    maps_obj = getattr(ch, "maps", None)
-                    if maps_obj and getattr(maps_obj, "uri", None):
-                        if maps_obj.uri not in seen_uris:
-                            seen_uris.add(maps_obj.uri)
-                            grounding_chunks.append(
-                                MapsGroundingChunk(
-                                    place_id=getattr(maps_obj, "place_id", None),
-                                    title=getattr(maps_obj, "title", "Google Maps Place"),
-                                    uri=maps_obj.uri,
-                                )
-                            )
+            run_resp = await client.post(
+                f"{DEPLOYED_AGENT_URL}/run",
+                json={
+                    "appName": DEPLOYED_AGENT_APP,
+                    "userId": user_id,
+                    "sessionId": session_id,
+                    "newMessage": {
+                        "role": "user",
+                        "parts": [{"text": req.message}],
+                    },
+                },
+            )
+            if run_resp.status_code != 200:
+                raise HTTPException(
+                    status_code=run_resp.status_code,
+                    detail=f"Cloud Run ADK error ({run_resp.status_code}): {run_resp.text[:400]}",
+                )
+
+            events = run_resp.json()
+            for ev in events:
+                content = ev.get("content") or {}
+                for part in content.get("parts") or []:
+                    if "functionCall" in part and part["functionCall"]:
+                        fn_name = part["functionCall"].get("name")
+                        if fn_name and fn_name not in tools_called:
+                            tools_called.append(fn_name)
+                    elif part.get("text") and not part.get("thought"):
+                        texts.append(part["text"])
+
+                _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
+
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    elapsed = round(time.time() - t0, 1)
+    reply_text = texts[-1].strip() if texts else "No response generated."
+
     return ChatResponse(
-        reply="\n".join(reply_parts).strip() or "No response generated.",
-        county=req.county or "Miami-Dade",
+        reply=reply_text,
+        county=req.county or "Lee",
         state=req.state or "FL",
+        tools_called=tools_called,
+        elapsed_seconds=elapsed,
+        agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
     )
