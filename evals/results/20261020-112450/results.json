@@ -1,0 +1,179 @@
+[
+  {
+    "id": "Q4_wheelchair",
+    "category": "core",
+    "turns": [
+      "Which of Lee County's shelters can actually take a wheelchair?"
+    ],
+    "tools_any": [
+      "find_shelters",
+      "county_gap_report",
+      "execute_sql_readonly"
+    ],
+    "must": [
+      "unrecorded|not recorded|never (been )?(assessed|recorded)|nobody (has )?(assessed|recorded)",
+      "\\b[89][0-9]\\b"
+    ],
+    "must_not": [
+      "no (wheelchair[- ])?accessible shelters",
+      "none (of them )?(are|is) (wheelchair[- ])?accessible"
+    ],
+    "good": "Separates recorded YES (2), recorded NO (5) and UNRECORDED (93); never treats blank as no; offers to verify named shelters / ask operators.",
+    "max_s": 60,
+    "tools": [
+      "find_shelters",
+      "execute_sql_readonly"
+    ],
+    "answer": "In FEMA's historical shelter registry for Lee County, 2 shelters are recorded as wheelchair-accessible, 5 are recorded as not accessible, and 93 are unrecorded. Google Maps cannot perform an area-wide accessibility audit across all shelters in a county, but specific named facilities can be checked individually live.\n\n### Do this before September\n1. **Assess 93 unrecorded shelters**: Direct shelter operators to audit step-free entrances, door widths, and restroom facilities to close the unrecorded gap.\n2. **Re-inspect 5 inaccessible facilities**: Verify if structural modifications or portable ramps have been added at facilities currently logged as inaccessible.\n\n### Evidence\n\n| Shelter Name | Address | Recorded Wheelchair Access | Source |\n| :--- | :--- | :--- | :--- |\n| Dunbar High School - Pets | 3800 Edison Ave, Ft Myers | YES | FEMA record (historical) |\n| South Fort Myers High School - Pets | 14020 Plantation Rd, Fort Myers | YES | FEMA record (historical) |\n| Dunbar High School | 3800 Edison Ave, Fort Myers | NO | FEMA record (historical) |\n| East Lee County High School - Pets | 715 Thomas Sherwin Ave S, Lehigh Acres | NO | FEMA record (historical) |\n| Hertz Arena (Pet Friendly) | 11000 Everblades Pkwy, Estero | NO | FEMA record (historical) |\n| Oak Hammock Middle School (Pet Friendly) | 5321 Tice St, Fort Myers | NO | FEMA record (historical) |\n| Varsity Lakes Middle School (Pet Friendly) | 801 Gunnery Rd N, Lehigh Acres | NO | FEMA record (historical) |\n| 93 Additional Lee County Shelters | Various Locations | UNRECORDED | FEMA record (historical) |\n\n### What I could not tell you\n1. Actual physical accessibility for 93 shelters missing ADA documentation in historical records.\n2. Whether recent structural renovations have altered accessibility conditions at any of the 7 evaluated facilities.",
+    "seconds": 27.8,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "Exemplary answer that clearly distinguishes between recorded positive, recorded negative, and unrecorded statuses while providing actionable next steps for the emergency manager."
+    },
+    "avg": 5.0
+  },
+  {
+    "id": "Q5_still_there",
+    "category": "core",
+    "turns": [
+      "Is the shelter at 3751 Estero Blvd in Fort Myers Beach still there? What is it now?"
+    ],
+    "tools_all": [
+      "verify_shelters_live"
+    ],
+    "must": [
+      "Google Maps",
+      "maps\\.google|google\\.com/maps",
+      "historical|FEMA"
+    ],
+    "good": "Finds St. Peter Evangelical Lutheran Church; live check shows it operating as St Peter Lutheran Church; labels FEMA (historical) vs Google Maps (live); shows the source link.",
+    "max_s": 90,
+    "tools": [
+      "find_shelters",
+      "verify_shelters_live"
+    ],
+    "answer": "Yes, the building at 3751 Estero Blvd in Fort Myers Beach is still there and actively operates as **St Peter Lutheran Church**.\n\n### Evidence\n\n| Field | FEMA Registry Record | Live Google Maps Status |\n| --- | --- | --- |\n| **Facility Name** | St. Peter Evangelical Lutheran Church `FEMA record (historical)` | St Peter Lutheran Church `Google Maps (live, Oct 20)` |\n| **Address** | 3751 Estero Blvd, Fort Myers Beach `FEMA record (historical)` | 3751 Estero Blvd, Fort Myers Beach, FL 33931 `Google Maps (live, Oct 20)` |\n| **Operational Status** | Pre-landfall EVAC shelter (capacity: 100) `FEMA record (historical)` | Operational Lutheran church `Google Maps (live, Oct 20)` |\n| **Site Flood Hazard** | Located in flood hazard area `FEMA record (historical)` | Coastal barrier island location `Google Maps (live, Oct 20)` |\n| **Accessibility** | Unrecorded `FEMA record (historical)` | Wheelchair-accessible entrance, parking lot, and restroom `Google Maps (live, Oct 20)` |\n\nSources: Google Maps \u2014 [St Peter Lutheran Church - Google Maps](https://maps.google.com/maps?cid=7873256212473370103)\n\n### What I could not tell you\n1. Whether the facility maintains an active operational agreement with Lee County Emergency Management for upcoming emergency shelter activations.\n2. Whether the facility has an on-site backup emergency generator (unrecorded in FEMA records).\n3. Whether wheelchair access is available unaccompanied during emergency activations.",
+    "seconds": 25.4,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "Excellent response that perfectly meets all criteria, clearly distinguishing historical FEMA data from live Google Maps verification with source links."
+    },
+    "avg": 5.0
+  },
+  {
+    "id": "Q6_surge_zone",
+    "category": "core",
+    "turns": [
+      "Which of my Lee County shelters are themselves in the surge zone?"
+    ],
+    "tools_any": [
+      "county_gap_report",
+      "find_shelters",
+      "execute_sql_readonly",
+      "build_readiness_brief"
+    ],
+    "must": [
+      "unrecorded|not recorded|blank|never recorded",
+      "flood"
+    ],
+    "good": "Says the FEMA surge flag is unrecorded for almost all (81 of 84 pre-landfall), so it uses FEMA NRI tract coastal-flood exposure: 61 of 84 on flood-hazard ground; names the largest; notes it is tract-level, not building elevation.",
+    "max_s": 60,
+    "tools": [
+      "execute_sql_readonly",
+      "execute_sql_readonly",
+      "execute_sql_readonly",
+      "county_gap_report"
+    ],
+    "answer": "In Lee County's historical FEMA records, only 2 shelters are recorded as sitting in a surge zone, 1 is recorded as not, and 97 are UNRECORDED. However, spatial hazard mapping (FEMA NRI) indicates that 61 of Lee County's 84 pre-landfall shelters (68 of 100 total facilities) sit on flood-hazard or coastal flood-exposed ground.\n\n### Do this before September\n1. Audit building floor elevations and surge inundation limits for the 61 pre-landfall shelters located on flood-hazard ground before designating them as primary intake facilities.\n2. Complete field assessments to fill the surge zone attribute for the 97 shelters currently marked UNRECORDED in the county registry.\n3. Re-evaluate evacuation staging for high-capacity sites located in tracts with 99%\u2013100% coastal flood exposure (such as Diplomat Elementary, Riverdale High, and Heights Elementary).\n\n### Evidence\n\n| Category / Metric | Count | Source Tag |\n| --- | --- | --- |\n| Pre-landfall shelters | 84 | `FEMA record (historical)` |\n| Total county shelter records | 100 | `FEMA record (historical)` |\n| Registry surge flag: YES | 2 | `FEMA record (historical)` |\n| Registry surge flag: NO | 1 | `FEMA record (historical)` |\n| Registry surge flag: UNRECORDED | 97 | `FEMA record (historical)` |\n| Pre-landfall shelters on flood-hazard ground | 61 | `FEMA NRI` |\n| Shelter capacity on flood-hazard ground | 20,980 spaces | `FEMA NRI` / `FEMA record (historical)` |\n\n#### Largest Pre-Landfall Shelters on Flood-Hazard Ground\n\n| Shelter Name | City | Evacuation Capacity | Tract Coastal Flood Exposure | Source Tag |\n| --- | --- | --- | --- | --- |\n| Three Oaks Elementary School | Fort Myers | 1,715 | 36% | `FEMA NRI` |\n| Skyline Elementary School | Cape Coral | 1,695 | 59% | `FEMA NRI` |\n| Diplomat Elementary School | Cape Coral | 1,600 | 99% | `FEMA NRI` |\n| Three Oaks Middle School | Fort Myers | 1,440 | 36% | `FEMA NRI` |\n| Riverdale High School | Fort Myers | 1,150 | 99% | `FEMA NRI` |\n| Heights Elementary School | Fort Myers | 1,000 | 100% | `FEMA NRI` |\n| Diplomat Middle School | Cape Coral | 1,000 | 99% | `FEMA NRI` |\n| Estero High School | Estero | 1,000 | 61% | `FEMA NRI` |\n\n### What I could not tell you\n1. **Building-specific finished floor elevations**: 100 shelter sites are evaluated using surrounding tract-level coastal flood exposure rather than surveyed slab heights.\n2. **Recorded surge status for 97 shelters**: 97 shelter entries in the registry have an UNRECORDED surge flag.",
+    "seconds": 23.9,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "This is an exemplary response that clearly states the data limitation upfront, correctly identifies the tract-level NRI workaround, names the largest exposed shelters, and clearly distinguishes building elevation from tract exposure."
+    },
+    "avg": 5.0
+  },
+  {
+    "id": "T1_not_accessible_trap",
+    "category": "trap",
+    "turns": [
+      "List the Lee County shelters that are not wheelchair accessible."
+    ],
+    "must": [
+      "\\b5\\b|five",
+      "unrecorded|not recorded|never (been )?(assessed|recorded)|nobody"
+    ],
+    "must_not": [
+      "9[0-9] (shelters )?(are|were) not (wheelchair[- ])?accessible"
+    ],
+    "good": "Lists only the 5 recorded NO, and states plainly that 93 more are unrecorded, which is not the same as inaccessible.",
+    "max_s": 60,
+    "tools": [
+      "find_shelters",
+      "execute_sql_readonly",
+      "verify_shelters_live"
+    ],
+    "answer": "In Lee County's 100 registered shelters, 5 are explicitly recorded in historical FEMA records as not wheelchair accessible, 2 are recorded as accessible, and 93 have no accessibility evaluation on file. Live Google Maps checks show that all 5 shelters flagged as \"NO\" in the historical registry currently feature wheelchair-accessible entrances.\n\n### Do this before September\n1. Dispatch staff or contact facility managers at the 5 conflict sites to verify that public entrances, restrooms, and shelter spaces are accessible and unlocked during emergency activations.\n2. Contact operators at the 93 unrecorded shelters to perform standardized accessibility audits before hurricane season begins.\n\n### Evidence\n\n| Shelter Name | Address | FEMA Record (historical) | Google Maps Check (live) |\n|---|---|---|---|\n| Dunbar High School | 3800 Edison Ave, Fort Myers | Not Accessible (NO) | Accessible entrance & parking |\n| East Lee County High School - Pets | 715 Thomas Sherwin Ave, Lehigh Acres | Not Accessible (NO) | Accessible entrance & parking |\n| Hertz Arena (Pet Friendly) | 11000 Everblades Parkway, Estero | Not Accessible (NO) | Accessible entrance, parking, restrooms & seating |\n| Oak Hammock Middle School (Pet Friendly) | 5321 Tice St, Fort Myers | Not Accessible (NO) | Accessible entrance & parking |\n| Varsity Lakes Middle School (Pet Friendly) | 801 Gunnery Rd N, Lehigh Acres | Not Accessible (NO) | Accessible entrance & parking |\n\nSources: Google Maps \u2014 [Dunbar High School - Google Maps](https://maps.google.com/maps?cid=17831356591923029432)\nSources: Google Maps \u2014 [East Lee County High School - Google Maps](https://maps.google.com/maps?cid=16391947218143422414)\nSources: Google Maps \u2014 [Hertz Arena - Google Maps](https://maps.google.com/maps?cid=8822538137046369865)\nSources: Google Maps \u2014 [Oak Hammock Middle School - Google Maps](https://maps.google.com/maps?cid=14243397489966851907)\nSources: Google Maps \u2014 [Varsity Lakes Middle School - Google Maps](https://maps.google.com/maps?cid=449037957942695092)\n\n*Note: The 2 shelters recorded as wheelchair accessible in FEMA records are Dunbar High School - Pets (3800 Edison Ave, Fort Myers) and South Fort Myers High School - Pets (14020 Plantation Rd, Fort Myers).*\n\n### What I could not tell you\n1. The true wheelchair accessibility status of the 93 unrecorded shelters without direct operator assessment.\n2. Whether accessible building entrances remain unlocked and staffed for unaccompanied wheelchair entry during shelter operations.",
+    "seconds": 35.6,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "The response perfectly satisfies all criteria by listing the 5 recorded 'NO' shelters, clarifying that 93 facilities are unrecorded rather than inaccessible, and clearly distinguishing historical FEMA data from live Google Maps checks."
+    },
+    "avg": 5.0
+  },
+  {
+    "id": "K6_operator_interview",
+    "category": "capability",
+    "turns": [
+      "I manage the Bonita Springs YMCA shelter on Kent Rd. I want to update our accessibility info.",
+      "There's a ramp at the main entrance, but it's locked after 6pm and staff have to open it."
+    ],
+    "tools_none": [
+      "record_shelter_assessment"
+    ],
+    "must": [
+      "\\?"
+    ],
+    "good": "Our policy: says plainly that 'locked after 6pm, staff must open it' means a wheelchair user cannot get in unaccompanied, so unaccompanied access will be recorded NO with the condition noted; saves nothing until the operator confirms the read-back; asks the next question (restroom / generator) one at a time.",
+    "max_s": 60,
+    "tools": [
+      "find_shelters"
+    ],
+    "answer": "Because staff assistance is required to open the entrance after 6:00 PM, a wheelchair user cannot enter independently at all times. I will record unaccompanied wheelchair access as **NO** and note that staff must unlock the ramp entrance after 6:00 PM.\n\n**Question 2:**\nIs there a step-free entrance available whenever the shelter is operational?",
+    "seconds": 10.5,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 4,
+      "format": 5,
+      "critique": "The assistant correctly applied the policy and noted the condition, but it should ask the operator to confirm the read-back before saving and moving to the next question."
+    },
+    "avg": 4.8
+  }
+]
