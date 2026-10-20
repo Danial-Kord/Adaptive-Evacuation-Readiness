@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Credentials - never commit these
+*.json.key
+service-account*.json
+credentials.json
+.env
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local data pulls. Everything this challenge uses lives in BigQuery in your own
+# project, so nothing here should ever need committing.
+data/*.parquet
+data/*.csv
+data/*.csv.gz
