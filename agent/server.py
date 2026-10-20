@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -275,6 +276,17 @@ async def query_bigquery_table_rows(
 
 
 
+_MAPS_LINE = re.compile(r"Google Maps\s*[—–-]+\s*\[([^\]]*)\]\((https?://[^)\s]+)\)")
+
+
+def _extract_maps_sources_from_text(text: str, seen_uris: set, out: List[MapsGroundingChunk]) -> None:
+    """The multi-agent coordinator passes sources up as 'Google Maps — [name](link)' lines."""
+    for title, uri in _MAPS_LINE.findall(text or ""):
+        if uri not in seen_uris:
+            seen_uris.add(uri)
+            out.append(MapsGroundingChunk(place_id=None, title=title or "Google Maps place", uri=uri))
+
+
 def _extract_maps_sources_recursive(
     obj: Any, seen_uris: set, out: List[MapsGroundingChunk]
 ) -> None:
@@ -368,6 +380,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
 
     elapsed = round(time.time() - t0, 1)
     reply_text = texts[-1].strip() if texts else "No response generated."
+    _extract_maps_sources_from_text(reply_text, seen_uris, grounding_chunks)
 
     return ChatResponse(
         reply=reply_text,
@@ -731,3 +744,12 @@ def inspect_clicked_area(
             "error": maps_error,
         },
     }
+
+
+# Serve the built React dashboard (copied to ./static in the dashboard image). Mounted last so the
+# /api and /health routes above take precedence.
+_STATIC_DIR = _AGENT_DIR / "static"
+if _STATIC_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="dashboard")

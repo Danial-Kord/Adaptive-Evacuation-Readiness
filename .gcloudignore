@@ -1,0 +1,9 @@
+.git
+.gitignore
+**/node_modules/
+**/.venv/
+**/__pycache__/
+frontend/dist/
+agent/static/
+evals/results/
+**/.env
