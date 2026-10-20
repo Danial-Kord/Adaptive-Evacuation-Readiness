@@ -1,0 +1,8 @@
+[
+  { "county_fips": "12086", "county_name": "Miami-Dade", "state": "FL" },
+  { "county_fips": "12071", "county_name": "Lee", "state": "FL" },
+  { "county_fips": "12103", "county_name": "Pinellas", "state": "FL" },
+  { "county_fips": "12057", "county_name": "Hillsborough", "state": "FL" },
+  { "county_fips": "12011", "county_name": "Broward", "state": "FL" },
+  { "county_fips": "12031", "county_name": "Duval", "state": "FL" }
+]

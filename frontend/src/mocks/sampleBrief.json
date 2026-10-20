@@ -1,0 +1,130 @@
+{
+  "state": "FL",
+  "county_name": "Miami-Dade",
+  "county_fips": "12086",
+  "season_context": "August Pre-Season Planning Brief (3 weeks prior to peak hurricane window)",
+  "summary_metrics": {
+    "total_shelters": 245,
+    "total_evacuation_capacity": 124500,
+    "wheelchair_yes": 22,
+    "wheelchair_no": 8,
+    "wheelchair_unrecorded": 215,
+    "pct_wheelchair_unrecorded": 87.8,
+    "medical_needs_shelters": 14,
+    "power_dependent_dme": 18420,
+    "power_dependent_is_censored": false
+  },
+  "who_cannot_leave": [
+    {
+      "geo_id": "12086003604",
+      "county_fips": "12086",
+      "total_pop": 4812,
+      "households_no_vehicle": 890,
+      "pct_no_vehicle": 46.2,
+      "pct_age_65_plus": 31.4,
+      "pct_disability": 24.8,
+      "pct_mobility": 19.3,
+      "mobile_homes": 42,
+      "nearest_any_shelter_km": 1.8,
+      "nearest_recorded_wheelchair_shelter_km": 8.4,
+      "shelters_within_reach_unrecorded_access": 5,
+      "priority_reason": "890 households without a vehicle (46.2%) and 31.4% aged 65+; nearest shelter with recorded wheelchair access is 8.4 km away (5 closer shelters have UNRECORDED accessibility)."
+    },
+    {
+      "geo_id": "12086005303",
+      "county_fips": "12086",
+      "total_pop": 5120,
+      "households_no_vehicle": 745,
+      "pct_no_vehicle": 38.9,
+      "pct_age_65_plus": 27.1,
+      "pct_disability": 21.0,
+      "pct_mobility": 16.8,
+      "mobile_homes": 185,
+      "nearest_any_shelter_km": 2.4,
+      "nearest_recorded_wheelchair_shelter_km": 11.2,
+      "shelters_within_reach_unrecorded_access": 4,
+      "priority_reason": "745 zero-vehicle households plus 185 mobile homes; 11.2 km to nearest recorded wheelchair-accessible shelter."
+    }
+  ],
+  "candidate_shelters": [
+    {
+      "shelter_id": "FEMA-FL-00101",
+      "shelter_name": "Miami Central Senior High School",
+      "address_1": "1781 NW 95th St",
+      "city": "Miami",
+      "county_name": "Miami-Dade",
+      "latitude": 25.8604,
+      "longitude": -80.2285,
+      "evacuation_capacity": 2800,
+      "post_impact_capacity": 1900,
+      "wheelchair_status": "UNRECORDED",
+      "generator_status": "YES",
+      "in_surge_slosh_area": false,
+      "is_medical": false,
+      "usage": "EVAC",
+      "maps_live_verification": {
+        "verified": true,
+        "summary": "Confirmed active public high school at 1781 NW 95th St. Single-building live lookup indicates wheelchair-accessible entrance and parking, resolving the UNRECORDED federal flag.",
+        "drive_time_note": "~11 mins (4.2 mi) via NW 7th Ave from Tract 12086003604",
+        "grounding_chunks": [
+          {
+            "place_id": "ChIJ_example_miami_central",
+            "title": "Miami Central Senior High School",
+            "uri": "https://www.google.com/maps/search/?api=1&query=Miami+Central+Senior+High+School"
+          }
+        ]
+      }
+    },
+    {
+      "shelter_id": "FEMA-FL-00209",
+      "shelter_name": "Robert Morgan Educational Center",
+      "address_1": "18180 SW 122nd Ave",
+      "city": "Miami",
+      "county_name": "Miami-Dade",
+      "latitude": 25.5982,
+      "longitude": -80.3894,
+      "evacuation_capacity": 3200,
+      "post_impact_capacity": 2400,
+      "wheelchair_status": "YES",
+      "generator_status": "YES",
+      "in_surge_slosh_area": false,
+      "is_medical": true,
+      "usage": "EVAC",
+      "maps_live_verification": {
+        "verified": true,
+        "summary": "Confirmed active educational campus. Matches FEMA record for wheelchair accessibility and generator availability.",
+        "grounding_chunks": [
+          {
+            "place_id": "ChIJ_example_robert_morgan",
+            "title": "Robert Morgan Educational Center",
+            "uri": "https://www.google.com/maps/search/?api=1&query=Robert+Morgan+Educational+Center"
+          }
+        ]
+      }
+    }
+  ],
+  "pre_season_gaps": [
+    {
+      "id": "GAP-01",
+      "category": "ACCESSIBILITY_AUDIT",
+      "severity": "HIGH",
+      "title": "Audit 5 High-Capacity Shelters with UNRECORDED Wheelchair Access Within 3 km of Tract 12086003604",
+      "recommendation": "87.8% of county shelters have NULL wheelchair accessibility in the federal registry. Auditing the 5 closest EVAC shelters before September cuts accessible shelter travel distance from 8.4 km to 1.8 km.",
+      "evidence_source": "FEMA_2022_REGISTRY"
+    },
+    {
+      "id": "GAP-02",
+      "category": "TRANSIT_GAP",
+      "severity": "HIGH",
+      "title": "Pre-Position Paratransit Pickup Points in Tract 12086003604 & Tract 12086005303",
+      "recommendation": "1,635 households across these two tracts have no vehicle. Straight-line distance exceeds walkable thresholds; stage paratransit shuttles routed to inland EVAC shelters outside the surge zone.",
+      "evidence_source": "ACS_SVI_EMPOWER"
+    }
+  ],
+  "unrecorded_and_limitations": [
+    "88% of Florida shelters (and 87.8% in Miami-Dade) have NULL (UNRECORDED) for wheelchair_accessible in FEMA's registry. Blank means nobody recorded it—never 'No'.",
+    "HHS emPOWER electricity-dependent counts (18,420 beneficiaries) are published at the COUNTY level only and cannot be disaggregated to individual census tracts.",
+    "CDC PLACES does not publish LACKTRPT (lack of reliable transportation) for Florida or Texas; transport vulnerability here relies on ACS/SVI vehicle ownership (households_no_vehicle / pct_no_vehicle).",
+    "Assisted living facilities are state-regulated and absent from federal CMS nursing home tables."
+  ]
+}

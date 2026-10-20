@@ -1,0 +1,51 @@
+# MCP Toolbox for Databases configuration
+# Run locally or deploy to Cloud Run (min-instances=1)
+sources:
+  evacuation-bq:
+    kind: bigquery
+    project: ${GOOGLE_CLOUD_PROJECT}
+    location: US
+
+tools:
+  query_county_shelters:
+    kind: bigquery-sql
+    source: evacuation-bq
+    description: >
+      Fetch shelters in a specific county along with evacuation capacity,
+      wheelchair accessibility (TRUE, FALSE, or NULL for unrecorded),
+      generator status, surge zone exposure, and medical designation.
+    parameters:
+      - name: county_name
+        type: string
+        description: County name (e.g., 'Miami-Dade', 'Pinellas', 'Lee')
+    statement: |
+      SELECT
+        shelter_id,
+        shelter_name,
+        address_1,
+        city,
+        county_name,
+        county_fips,
+        latitude,
+        longitude,
+        evacuation_capacity,
+        post_impact_capacity,
+        CASE
+          WHEN wheelchair_accessible IS TRUE THEN 'YES'
+          WHEN wheelchair_accessible IS FALSE THEN 'NO'
+          ELSE 'UNRECORDED'
+        END AS wheelchair_status,
+        CASE
+          WHEN generator_onsite IS TRUE THEN 'YES'
+          WHEN generator_onsite IS FALSE THEN 'NO'
+          ELSE 'UNRECORDED'
+        END AS generator_status,
+        in_surge_slosh_area,
+        in_100_yr_floodplain,
+        is_medical,
+        usage
+      FROM `evacuation_readiness.shelters`
+      WHERE LOWER(county_name) LIKE CONCAT('%', LOWER(@county_name), '%')
+         OR LOWER(county_parish) LIKE CONCAT('%', LOWER(@county_name), '%')
+      ORDER BY evacuation_capacity DESC NULLS LAST
+      LIMIT 100
