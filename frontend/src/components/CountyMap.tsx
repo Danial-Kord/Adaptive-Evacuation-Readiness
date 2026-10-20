@@ -394,7 +394,7 @@ export function CountyMap({
                     <> ({shelterMaps.placeType} · <b className={`record-badge ${shelterMaps.businessStatus === "OPERATIONAL" ? "yes" : shelterMaps.businessStatus.includes("CLOSED") ? "no" : "unrecorded"}`}>{shelterMaps.businessStatus}</b>)</>
                   ) : null}
                 </p>
-                {shelterMaps && !loadingMaps && shelterMaps.openHours && (
+                {shelterMaps && !loadingMaps && !shelterMaps.error && (
                   <OpenHoursHistogram hoursText={shelterMaps.openHours} />
                 )}
               </div>

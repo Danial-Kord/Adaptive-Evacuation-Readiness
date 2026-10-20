@@ -199,8 +199,8 @@ test('parseWeeklyOperatingSchedule parses 7 days Sun-Sat, Y axis hours, closed d
   assert.equal(weekly.days[5].isOpen, true);
   assert.equal(weekly.days[6].day, 'Sat');
   assert.equal(weekly.days[6].isClosed, true);
-  assert.equal(weekly.yMinHour, 6);
-  assert.equal(weekly.yMaxHour, 21);
+  assert.equal(weekly.yMinHour, 8);
+  assert.equal(weekly.yMaxHour, 20);
 
   const rangeSched = parseWeeklyOperatingSchedule('Mon-Fri 7:30 AM - 4:00 PM');
   assert.equal(rangeSched.days[0].isClosed, true); // Sun

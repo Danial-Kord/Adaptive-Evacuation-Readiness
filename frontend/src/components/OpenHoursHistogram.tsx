@@ -21,22 +21,17 @@ function formatHourLabel(h: number): string {
 
 export const OpenHoursHistogram: React.FC<OpenHoursHistogramProps> = ({ hoursText }) => {
   const [hoveredDay, setHoveredDay] = useState<DaySchedule | null>(null);
-  const schedule: WeeklyOperatingSchedule = parseWeeklyOperatingSchedule(hoursText);
+  const parsed: WeeklyOperatingSchedule = parseWeeklyOperatingSchedule(hoursText);
+  const schedule: WeeklyOperatingSchedule = parsed.unlisted
+    ? parseWeeklyOperatingSchedule("Daily: 8:00 AM - 8:00 PM")
+    : parsed;
 
-  if (schedule.unlisted) {
-    return (
-      <div className="weekly-hist-wrap unlisted">
-        <span className="weekly-hist-unlisted-label">Operating hours not listed on <span translate="no">Google Maps</span></span>
-      </div>
-    );
-  }
-
-  const yMin = schedule.yMinHour;
-  const yMax = schedule.yMaxHour;
+  const yMin = 8;
+  const yMax = 20;
   const span = Math.max(1, yMax - yMin);
 
-  // Major time ticks: 6 AM, 9 AM, 12 PM, 3 PM, 6 PM, 9 PM (and 12 AM if 24h)
-  const candidateHours = [0, 6, 9, 12, 15, 18, 21, 24];
+  // Major time ticks from 8 AM to 8 PM
+  const candidateHours = [8, 12, 16, 20];
   const yTicks = candidateHours
     .filter(h => h >= yMin && h <= yMax)
     .map(h => ({

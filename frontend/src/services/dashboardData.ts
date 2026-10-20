@@ -247,8 +247,8 @@ export function parseWeeklyOperatingSchedule(text: string): WeeklyOperatingSched
       isAll24Hours: false,
       isAllClosed: false,
       summaryLabel: "Hours not listed on Google Maps",
-      yMinHour: 6,
-      yMaxHour: 21,
+      yMinHour: 8,
+      yMaxHour: 20,
     };
   }
 
@@ -260,8 +260,8 @@ export function parseWeeklyOperatingSchedule(text: string): WeeklyOperatingSched
       isAll24Hours: false,
       isAllClosed: true,
       summaryLabel: "Closed",
-      yMinHour: 6,
-      yMaxHour: 21,
+      yMinHour: 8,
+      yMaxHour: 20,
     };
   }
 
@@ -285,8 +285,8 @@ export function parseWeeklyOperatingSchedule(text: string): WeeklyOperatingSched
       isAll24Hours: true,
       isAllClosed: false,
       summaryLabel: "Open 24 Hours Daily",
-      yMinHour: 6,
-      yMaxHour: 21,
+      yMinHour: 8,
+      yMaxHour: 20,
     };
   }
 
@@ -354,21 +354,9 @@ export function parseWeeklyOperatingSchedule(text: string): WeeklyOperatingSched
     }
   }
 
-  // Determine Y-axis min/max
-  let yMin = 6;
-  let yMax = 21;
-
-  for (const d of WEEK_DAYS) {
-    const item = dayMap[d];
-    if (item.isOpen && !item.is24Hours) {
-      if (item.startHour !== null && item.startHour < yMin) {
-        yMin = Math.max(0, Math.floor(item.startHour));
-      }
-      if (item.endHour !== null && item.endHour > yMax) {
-        yMax = Math.min(24, Math.ceil(item.endHour));
-      }
-    }
-  }
+  // Determine Y-axis min/max (fixed 8 AM – 8 PM standard range)
+  const yMin = 8;
+  const yMax = 20;
 
   const daysList = WEEK_DAYS.map(d => dayMap[d]);
   const isAll24 = daysList.every(d => d.is24Hours);
