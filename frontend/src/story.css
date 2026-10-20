@@ -177,3 +177,17 @@
 .todo > li > .todo-head > div { flex-direction: column; }
 .todo > li > .todo-more { display: block; }
 .todo > li > .todo-head { gap: 14px; }
+
+/* Before-September: larger, more informative */
+.todo b { font-size: 19px; }
+.todo > li > .todo-head > div > span { font-size: 16px; line-height: 1.55; }
+.todo-list li { font-size: 16px; padding: 10px 14px; align-items: center; }
+.todo-list li b { font-size: 16px; color: var(--ink); }
+.todo-list .muted, .todo-list small.muted { font-size: 14px; }
+.todo-owner { flex-shrink: 0; text-align: right; font-size: 12.5px; color: var(--ink-faint); line-height: 1.4; padding-left: 12px; }
+.todo-owner b { font-size: 14px !important; color: var(--storm); }
+.need-bar { display: block; height: 6px; margin-top: 6px; max-width: 260px; border-radius: 3px; background: #e3e8ef; overflow: hidden; }
+.need-bar i { display: block; height: 100%; background: var(--storm); border-radius: 3px; }
+.tag.mild { background: #eef2f7; color: var(--ink-soft); }
+.todo-list .tag { font-size: 13px; margin-left: 8px; }
+.todo-list li > span:first-child { font-weight: 600; color: var(--ink); }
