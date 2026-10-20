@@ -23,7 +23,12 @@ from google.genai import types
 
 from evacuation_agent.agent import root_agent
 from evacuation_agent.prompts import SYSTEM_INSTRUCTION
-from evacuation_agent.schemas import ChatRequest, ChatResponse, MapsGroundingChunk
+from evacuation_agent.schemas import (
+    ChatRequest,
+    ChatResponse,
+    MapsGroundingChunk,
+    RecommendedAction,
+)
 from evacuation_agent.tools import (
     analyze_shelter_readiness,
     get_power_and_medical_gaps,
@@ -335,6 +340,34 @@ def _extract_maps_sources_recursive(
             _extract_maps_sources_recursive(item, seen_uris, out)
 
 
+def _extract_recommended_actions_recursive(
+    obj: Any, actions_by_id: Dict[str, RecommendedAction]
+) -> None:
+    """Recursively find `recommended_actions` or `recommended_action` in ADK tool responses and stateDelta."""
+    if isinstance(obj, dict):
+        if "recommended_actions" in obj and isinstance(obj["recommended_actions"], list):
+            for raw_act in obj["recommended_actions"]:
+                if isinstance(raw_act, dict) and raw_act.get("action_id"):
+                    try:
+                        act = RecommendedAction(**raw_act)
+                        actions_by_id[act.action_id] = act
+                    except Exception:
+                        pass
+        if "recommended_action" in obj and isinstance(obj["recommended_action"], dict):
+            raw_act = obj["recommended_action"]
+            if raw_act.get("action_id"):
+                try:
+                    act = RecommendedAction(**raw_act)
+                    actions_by_id[act.action_id] = act
+                except Exception:
+                    pass
+        for v in obj.values():
+            _extract_recommended_actions_recursive(v, actions_by_id)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_recommended_actions_recursive(item, actions_by_id)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     """Forward chat turns to the deployed Cloud Run ADK service (`evac_agent`) and extract tools + Maps sources."""
@@ -346,6 +379,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     texts: List[str] = []
     grounding_chunks: List[MapsGroundingChunk] = []
     seen_uris: set = set()
+    actions_by_id: Dict[str, RecommendedAction] = {}
 
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
@@ -383,6 +417,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
                         texts.append(part["text"])
 
                 _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
+                _extract_recommended_actions_recursive(ev, actions_by_id)
 
     except HTTPException:
         raise
@@ -401,6 +436,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         elapsed_seconds=elapsed,
         agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
+        recommended_actions=list(actions_by_id.values()),
     )
 
 
@@ -485,6 +521,7 @@ async def chat_stream_endpoint(req: ChatRequest):
         texts: List[str] = []
         grounding_chunks: List[MapsGroundingChunk] = []
         seen_uris: set = set()
+        actions_by_id: Dict[str, RecommendedAction] = {}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
                 await client.post(
@@ -514,11 +551,17 @@ async def chat_stream_endpoint(req: ChatRequest):
                             elif part.get("text") and not part.get("thought") and not ev.get("partial"):
                                 texts.append(part["text"])
                         _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
+                        _extract_recommended_actions_recursive(ev, actions_by_id)
             reply_text = texts[-1].strip() if texts else "I couldn't produce an answer that time. Please try again."
             _extract_maps_sources_from_text(reply_text, seen_uris, grounding_chunks)
-            yield _sse({"type": "final", "reply": reply_text, "tools_called": tools_called,
-                        "elapsed_seconds": round(time.time() - t0, 1),
-                        "grounding_chunks": [c.model_dump() for c in grounding_chunks]})
+            yield _sse({
+                "type": "final",
+                "reply": reply_text,
+                "tools_called": tools_called,
+                "elapsed_seconds": round(time.time() - t0, 1),
+                "grounding_chunks": [c.model_dump() for c in grounding_chunks],
+                "recommended_actions": [a.model_dump() for a in actions_by_id.values()],
+            })
         except Exception as exc:  # surface any failure to the UI instead of hanging
             yield _sse({"type": "error", "message": str(exc)[:300]})
 

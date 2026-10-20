@@ -3,6 +3,17 @@
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
+from evac_agent.schemas import (
+    ActionOption,
+    ActionSeverity,
+    ActionType,
+    ApprovalDetails,
+    AttentionItem,
+    InteractionMode,
+    LocationInfo,
+    RecommendedAction,
+)
+
 
 class MapsGroundingChunk(BaseModel):
     """Represents a single Google Maps grounding source for compliant UI attribution."""
@@ -64,3 +75,7 @@ class ChatResponse(BaseModel):
     elapsed_seconds: Optional[float] = None
     agent_url: Optional[str] = None
     grounding_chunks: List[MapsGroundingChunk] = Field(default_factory=list)
+    recommended_actions: List[RecommendedAction] = Field(
+        default_factory=list,
+        description="Structured Pydantic recommended actions (with LocationInfo, attention_items, approval details, and selectable options) emitted by the agents and tools.",
+    )
