@@ -54,7 +54,7 @@ def build_readiness_brief(county: str, top_n: int = 5, options_per_tract: int = 
                                            "evacuation_driver", "pct_coastal_flood_exposed", "why")})
         options, usable_walk, usable_any = [], 0, 0
         for o in row["options"]:
-            v = verified.get(o["shelter_id"])
+            v = next((r for (sid, _), r in verified.items() if sid == o["shelter_id"]), None)
             entry = {
                 "shelter_id": o["shelter_id"], "name": o["shelter_name"], "address": f"{o['address']}, {o['city']}",
                 "straight_line_miles": o["miles"], "reachability": o["reachability"], "capacity": o["capacity"],

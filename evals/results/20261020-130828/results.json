@@ -1,0 +1,106 @@
+[
+  {
+    "id": "Q1_who_struggles",
+    "category": "core",
+    "turns": [
+      "Which neighborhoods in Lee County would struggle most to self-evacuate?"
+    ],
+    "tools_any": [
+      "prioritization_agent"
+    ],
+    "must": [
+      "no[- ]?(vehicle|car)",
+      "modeled"
+    ],
+    "must_not": [
+      "priority[ _]score"
+    ],
+    "good": "Ranked short list with place names, no-car households, 65+, mobile homes; says mobility disability is modeled; distances in miles; no internal scores.",
+    "max_s": 120,
+    "tools": [
+      "prioritization_agent"
+    ],
+    "answer": "### Bottom Line\nIn Lee County, **tract 12071050402 near Bonita Springs** ranks highest for self-evacuation struggle with **93.7 priority points**, driven by high concentrations of older residents (\ud83d\udcca 2,033), mobility disabilities (\ud83e\uddee 1,228), and 100% coastal flood exposure (\ud83c\udf0a).\n\n---\n\n### Do This Before September\n1. **Pre-position transport buses near Bonita Springs (tract 12071050402):** Target outreach and pickup routes for \ud83d\udcca 260 zero-vehicle households and \ud83e\uddee 1,228 residents with mobility disabilities.\n2. **Issue early evacuation advisories in North Fort Myers (tracts 12071020801 & 12071020501):** Establish direct communications with park managers covering \ud83d\udcca 3,113 combined mobile home units.\n3. **Conduct targeted registry sign-ups in Fort Myers (tract 12071030202):** Coordinate Special Needs Registry door-to-door outreach for \ud83e\uddee 1,166 residents with mobility limitations living in a \ud83c\udf0a 100% flood hazard zone.\n\n---\n\n### Evidence: Priority Neighborhood Ranking\n\n| Location (Census Tract) | Priority Points | No Car | 65+ | Disability \ud83e\uddee | Mobile Homes | Flood \ud83c\udf0a | Main Need |\n| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |\n| **near Bonita Springs** *(12071050402)* | **93.7** | 92 pts<br>(\ud83d\udcca 260 hh) | 96 pts<br>(\ud83d\udcca 2,033 pop) | 95 pts<br>(\ud83e\uddee 1,228 pop) | 95 pts<br>(\ud83d\udcca 855 units) | 92 pts<br>(\ud83c\udf0a 100%) | Older residents: needs check-ins and help leaving |\n| **near North Fort Myers** *(12071020801)* | **85.5** | 98 pts<br>(\ud83d\udcca 401 hh) | 86 pts<br>(\ud83d\udcca 1,383 pop) | 55 pts<br>(\ud83e\uddee 633 pop) | 99 pts<br>(\ud83d\udcca 1,611 units) | 77 pts<br>(\ud83c\udf0a 64%) | Mobile homes: must leave in any hurricane |\n| **near Fort Myers** *(12071030202)* | **84.2** | 73 pts<br>(\ud83d\udcca 124 hh) | 86 pts<br>(\ud83d\udcca 1,370 pop) | 94 pts<br>(\ud83e\uddee 1,166 pop) | 83 pts<br>(\ud83d\udcca 333 units) | 96 pts<br>(\ud83c\udf0a 100%) | Mobility disability: needs accessible transport/shelter |\n| **near North Fort Myers** *(12071020501)* | **83.0** | 76 pts<br>(\ud83d\udcca 136 hh) | 95 pts<br>(\ud83d\udcca 1,941 pop) | 77 pts<br>(\ud83e\uddee 838 pop) | 99 pts<br>(\ud83d\udcca 1,502 units) | 75 pts<br>(\ud83c\udf0a 56%) | Mobile homes: must leave in any hurricane |\n| **near Bonita Springs** *(12071050401)* | **82.7** | 79 pts<br>(\ud83d\udcca 150 hh) | 85 pts<br>(\ud83d\udcca 1,337 pop) | 70 pts<br>(\ud83e\uddee 763 pop) | 86 pts<br>(\ud83d\udcca 435 units) | 97 pts<br>(\ud83c\udf0a 100%) | Mobile homes: must leave in any hurricane |\n\n**Method & Weights:** Each factor score represents a statewide percentile (0\u2013100 scale, where 100 is highest vulnerability in Florida). Priority points are computed using standard default weights: **No Car (25%)**, **Older Adults 65+ (20%)**, **Mobility Disability (20%)**, **Mobile Homes (20%)**, and **Coastal Flood Exposure (15%)**. Only tracts targeted by evacuation orders (\u226525% coastal flood exposure or \u226510% mobile homes) are ranked. *Let me know if you would like to adjust these weights or audit the ranking for equity.*\n\n---\n\n### What I Could Not Tell You\n- **Specific household vehicle access changes:** \ud83d\udcca ACS Census estimates reflect survey baseline data rather than real-time vehicle ownership changes.\n- **Exact mobility disability counts:** \ud83e\uddee CDC PLACES mobility figures are statistical modeled estimates, not a direct door-to-door census count.\n- **Shelter reachability & transit routes:** Destination routing and drive times for these specific tracts require running a destination accessibility analysis.\n\n---\n<small>\ud83d\udd70\ufe0f historical FEMA record \u00b7 \ud83d\udfe2 live Google Maps check \u00b7 \ud83d\udcca measured (Census) \u00b7 \ud83e\uddee modeled (CDC) \u00b7 \ud83c\udf0a FEMA hazard model \u00b7 \u2753 unrecorded \u00b7 \ud83d\uddfa\ufe0f county-level only \u00b7 \ud83d\udccf straight-line \u00b7 \ud83d\ude97 Google Maps drive time</small>",
+    "seconds": 43.9,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 3,
+      "critique": "The answer heavily relies on internal priority points and factor scores (e.g., '93.7 priority points', '92 pts'), violating the requirement to avoid internal scoring jargon."
+    },
+    "avg": 4.6
+  },
+  {
+    "id": "Q2_power_dependent",
+    "category": "core",
+    "turns": [
+      "How many people in Lee County depend on electricity for medical equipment?"
+    ],
+    "tools_any": [
+      "county_gap_report",
+      "execute_sql_readonly"
+    ],
+    "must": [
+      "7,?381",
+      "county[- ]level|county level|per county|not .{0,40}(block|tract|neighbo)"
+    ],
+    "good": "Gives 7,381 (HHS emPOWER), breaks out oxygen/dialysis, and says it is county-level only so it cannot say which block.",
+    "max_s": 120,
+    "tools": [
+      "execute_sql_readonly"
+    ],
+    "answer": "**Bottom Line:**\nThere are **7,381** Medicare beneficiaries in Lee County who depend on electricity for durable medical equipment (DME) \ud83d\uddfa\ufe0f.\n\n### Evidence\n\n| Medical Power-Dependence Category | Beneficiary Count \ud83d\uddfa\ufe0f | Source |\n| :--- | :--- | :--- |\n| Power-Dependent Durable Medical Equipment (DME) | 7,381 | HHS emPOWER \ud83d\uddfa\ufe0f |\n| Oxygen Services (Any DME) | 1,890 | HHS emPOWER \ud83d\uddfa\ufe0f |\n| ESRD Dialysis Facility Services (Any DME) | 286 | HHS emPOWER \ud83d\uddfa\ufe0f |\n\n### What I could not tell you\n1. **Sub-county distribution:** Power-dependence data is tracked at the \ud83d\uddfa\ufe0f county-level only, so tract-level geographic distribution within Lee County is not available in this dataset.\n2. **Non-Medicare population:** HHS emPOWER data tracks Medicare beneficiaries and does not account for power-dependent individuals covered solely by private insurance or Medicaid.\n\n<small>\ud83d\udd70\ufe0f historical FEMA record \u00b7 \ud83d\udfe2 live Google Maps check \u00b7 \ud83d\udcca measured (Census) \u00b7 \ud83e\uddee modeled (CDC) \u00b7 \ud83c\udf0a FEMA hazard model \u00b7 \u2753 unrecorded \u00b7 \ud83d\uddfa\ufe0f county-level only \u00b7 \ud83d\udccf straight-line \u00b7 \ud83d\ude97 Google Maps drive time</small>",
+    "seconds": 10.4,
+    "fails": [],
+    "passed": true,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "Excellent response that directly answers the question, includes the required breakouts and HHS emPOWER source attribution, and clearly explains county-level data limitations."
+    },
+    "avg": 5.0
+  },
+  {
+    "id": "Q7_what_to_fix",
+    "category": "core",
+    "turns": [
+      "What should I fix before the season in Lee County?"
+    ],
+    "tools_any": [
+      "county_gap_report",
+      "prioritization_agent",
+      "destination_agent"
+    ],
+    "must": [
+      "(^|\\n)\\s*1[.)]",
+      "pickup|transport|bus"
+    ],
+    "good": "Numbered, assignable actions with counts: pickup points for no-car households, operator assessments for unrecorded shelters, flood-hazard shelters, medical-needs generators, nursing homes on flood-hazard ground.",
+    "max_s": 150,
+    "tools": [
+      "county_gap_report"
+    ],
+    "answer": "### Bottom Line\nLee County has **20,980 pre-landfall shelter capacity \ud83d\udd70\ufe0f** across 61 shelters located on flood-hazard ground \ud83c\udf0a, while **4,063 zero-vehicle households \ud83d\udcca** in evacuation zones live over 1 mile \ud83d\udccf from any pre-landfall shelter. Furthermore, 93 of 100 registered county shelters lack recorded wheelchair accessibility assessments \u2753.\n\n---\n\n### Do This Before September\n1. **Audit flood-hazard pre-landfall shelters**: Re-evaluate evacuation protocols for 61 pre-landfall shelters (20,980 capacity \ud83d\udd70\ufe0f) on flood-hazard ground \ud83c\udf0a (e.g., Diplomat Middle & Elementary in Cape Coral, Heights Elementary in Fort Myers).\n2. **Conduct shelter accessibility & generator assessments**: Survey operators across 93 shelters with unrecorded wheelchair access \u2753 and 94 with unrecorded generator status \u2753, prioritizing all 9 medical-needs shelters (2,497 capacity \ud83d\udd70\ufe0f) whose backup generator availability remains unrecorded \u2753.\n3. **Deploy targeted transit plans for carless residents**: Establish emergency shuttles for 90 evacuation-zone tracts where 4,063 zero-vehicle households \ud83d\udcca have no shelter within 1 mile \ud83d\udccf (start with Census Tract 12071001915: 456 carless households \ud83d\udcca, 4.5 miles \ud83d\udccf to nearest shelter).\n4. **Confirm healthcare facility evacuation & power contingencies**: Review evacuation plans for 15 nursing homes (1,569 beds) on flood-hazard ground \ud83c\udf0a and confirm utility power backup plans for 7,381 power-dependent residents \ud83d\uddfa\ufe0f and 286 facility dialysis patients \ud83d\uddfa\ufe0f.\n\n---\n\n### Evidence\n\n| Gap Category | Findings & Impact | Data Sources & Details |\n| :--- | :--- | :--- |\n| **Shelter Flood Exposure** | 61 of 84 pre-landfall shelters (20,980 / 34,000 capacity \ud83d\udd70\ufe0f) on flood-hazard ground \ud83c\udf0a | \ud83d\udd70\ufe0f FEMA record \u00b7 \ud83c\udf0a FEMA hazard model |\n| **Walking & Transit Access Gaps** | 90 evacuation tracts (4,063 zero-vehicle HHs \ud83d\udcca / 263,661 pop \ud83d\udcca) > 1 mi \ud83d\udccf from shelter | \ud83d\udcca Census ACS \u00b7 \ud83d\udccf straight-line distance |\n| **Nursing Home Risk Exposure** | 15 of 20 nursing homes (1,569 / 2,177 beds) on flood-hazard ground \ud83c\udf0a | \ud83d\udd70\ufe0f FEMA record \u00b7 \ud83c\udf0a FEMA hazard model |\n| **Medical & Power Dependence** | 7,381 power-dependent residents \ud83d\uddfa\ufe0f; 9 medical shelters (2,497 cap \ud83d\udd70\ufe0f) | \ud83d\uddfa\ufe0f HHS emPOWER \u00b7 \u2753 0/9 medical shelters have recorded generators |\n| **Accessibility Data Gaps** | 93 shelters missing wheelchair assessments \u2753; 94 missing generator records \u2753 | \ud83d\udd70\ufe0f FEMA record \u00b7 \u2753 unrecorded fields |\n\n---\n\n### What I Could Not Tell You\n* **Accessibility status**: 93 shelters missing wheelchair access records \u2753; 94 missing generator records \u2753.\n* **Exact locations for power-dependent residents**: HHS emPOWER totals are county-level only \ud83d\uddfa\ufe0f (7,381 residents).\n* **Shelter capacity & usage**: 21 shelter capacities \u2753 and 12 shelter usage types \u2753 remain unrecorded in the dataset.\n\n<small>\ud83d\udd70\ufe0f historical FEMA record \u00b7 \ud83d\udfe2 live Google Maps check \u00b7 \ud83d\udcca measured (Census) \u00b7 \ud83e\uddee modeled (CDC) \u00b7 \ud83c\udf0a FEMA hazard model \u00b7 \u2753 unrecorded \u00b7 \ud83d\uddfa\ufe0f county-level only \u00b7 \ud83d\udccf straight-line \u00b7 \ud83d\ude97 Google Maps drive time</small>",
+    "seconds": 24.9,
+    "fails": [
+      "missing /pickup|transport|bus/"
+    ],
+    "passed": false,
+    "grade": {
+      "answers": 5,
+      "honesty": 5,
+      "provenance": 5,
+      "actionable": 5,
+      "format": 5,
+      "critique": "Excellent response that directly answers the question with prioritized, actionable recommendations, exact counts, named locations, and robust data provenance tags."
+    },
+    "avg": 5.0
+  }
+]

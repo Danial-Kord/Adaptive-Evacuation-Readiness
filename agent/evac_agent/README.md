@@ -1,45 +1,74 @@
-# evac_agent — working ADK agent (deployed)
+# evac_agent — multi-agent evacuation readiness (deployed)
 
 Live (public): https://evac-readiness-agent-861336771001.us-east1.run.app/dev-ui/ → pick `evac_agent`.
-Cloud Run service `evac-readiness-agent`, us-east1, min-instances 1.
+Cloud Run service `evac-readiness-agent`, us-east1, min-instances 1. Model: `gemini-3.6-flash`.
 
-Scenario: helps the Lee County, FL emergency manager decide which shelters to verify and where to stage
-transport for households without a car, before September.
+## Architecture: one coordinator, three specialists — one per question the manager asks
 
-## What's in it
-| File | Role |
-|---|---|
-| `agent.py` | Root agent on `gemini-3.6-flash`: system instruction, custom tools, `google_maps_grounding`, Google-managed BigQuery MCP server (read-only tools) |
-| `data.py` | BigQuery tools: `find_people_who_cannot_self_evacuate`, `shelter_options_for_tract`, `find_shelters`, `county_gap_report`, `equity_audit`, `record_shelter_assessment` |
-| `verify.py` | `verify_shelters_live`: Grounding with Google Maps (places + routing), one building at a time. Verdicts CONFIRMED / RENAMED / CLOSED / NOT_FOUND / UNVERIFIED; accessibility accepted only when grounding metadata cites a Maps source; stores `place_id` only |
-| `brief.py` | `build_readiness_brief`: the 4-segment Readiness Brief; live verdicts drop or flag shelters |
-| `config.py` | Thresholds: walk 1.6 km, drive 25 km, coastal-flood share 25%; retry/backoff for shared Gemini quota |
-| `../sql/derived.sql` | Derived tables: `shelters_enriched`, `tract_readiness`, `care_enriched`, `counties`, `shelter_place_ids`, `shelter_assessments` |
-
-## Modeling decisions (defend these in the deck)
-- Flags are YES / NO / UNRECORDED; NULL never becomes NO.
-- Pre-landfall shelters = usage EVAC/BOTH (+ unknown usage, flagged). POST capacity 0 is by design, not missing.
-- Shelter site hazard = nearest tract's FEMA NRI coastal-flood exposure (shelter surge flag is 97% blank in Lee).
-- Evacuation-zone tract = ≥25% of residents exposed to coastal flooding, or ≥10% mobile homes ("run from water, hide from wind").
-- Need score = within-county percentile of counts: no-vehicle households ×2, modeled mobility disability, 65+, mobile homes. No race input; race is audited after.
-
-## Run
-```bash
-python -m venv .venv && .venv/bin/pip install -r agent/evac_agent/requirements.txt
-cp agent/evac_agent/.env.example agent/evac_agent/.env
-gcloud auth application-default login
-.venv/bin/python agent/sql/build_derived.py          # after scripts/load.sh FL
-cd agent && ../.venv/bin/python run_test.py "Give me the readiness brief for Lee County"
-../.venv/bin/adk web                                    # local UI
+```
+Emergency manager
+      │
+Coordinator (evac_readiness_coordinator)
+  routes, chains, writes the answer · BigQuery MCP for quick facts · county_gap_report · operator interviews
+  ├── prioritization_agent  Q1  Which tracts in Florida should we prioritize, and why?
+  │     rank_priority_tracts · set_priority_weights · equity_audit
+  ├── destination_agent     Q2  Where would those people go, and can they get there?
+  │     plan_destinations · set_reachability_rules · find_shelters
+  └── verification_agent    Q3  Is the record accurate and up to date?
+        data_quality_report · verify_shelters_live (Grounding with Google Maps) · google_maps
 ```
 
-## Deploy
+Routing, from the manager's point of view:
+| Question shape | Who answers | Why |
+|---|---|---|
+| Active emergency ("hitting now, where do I send this family") | Coordinator, instantly, no tools | 911 / county EOC. A planning tool must not pretend to know what's open today |
+| Quick fact ("Florida's total shelter capacity") | Coordinator + BigQuery MCP | One query; no reason to wait on three agents |
+| Q1 / Q2 / Q3 | The matching specialist | Each owns its tools and rules |
+| Full brief / "walk me through it" | Q1 → Q2 (with Q1's tract ids) → Q3 | The presentation flow |
+
+## Q1 — scoring (manager-adjustable)
+Each tract gets **0–100 points per factor** = its statewide percentile in Florida:
+no-car households 📊, residents 65+ 📊, adults with a mobility disability 🧮, mobile homes 📊,
+coastal-flood exposure 🌊. **Priority points** = weighted average (default weights: no-car ×2, others ×1 —
+no-car is the measured signal of not being able to leave). **Main need** = the tract's highest-scoring
+people factor ("no car: needs organized transport", …). **Gate:** only tracts an evacuation order would
+target are ranked (≥25% coastal-flood exposure or ≥10% mobile homes) — "run from water, hide from wind".
+`set_priority_weights` changes weights for the conversation; `equity_audit` checks the result.
+
+## Q2 — reachability (manager-adjustable)
+| Household | Reachable if… | Distance label |
+|---|---|---|
+| Has a car | ≤ 30 min drive | 🚗 Google Maps drive time |
+| No car | ≤ 1 mile walk (~20 min with a go-bag) | 📏 straight-line |
+| No car + mobility disability | nothing is walkable → door-to-door pickup (counted, 🧮 modeled) | — |
+
+**Surge rule:** shelters FEMA records inside the storm surge zone are excluded. Shelters on tracts with
+≥25% coastal-flood exposure stay in but are flagged "confirm elevation" (excluding them would delete 62%
+of Lee County's capacity on a tract-level proxy). Shelters with no recorded capacity are not counted.
+`set_reachability_rules` changes the drive/walk limits for the conversation.
+
+## Q3 — accuracy and freshness
+- `data_quality_report`: unrecorded counts per field, self-contradicting records (e.g. Dunbar High School:
+  wheelchair YES in one record, NO in another), suspicious records (name says INACTIVE, 0 capacity,
+  county text vs coordinates), reporting bias (15 counties recorded zero wheelchair answers).
+- `verify_shelters_live`: one building at a time against Google Maps — CONFIRMED / RENAMED / CLOSED /
+  NOT_FOUND / DIFFERENT_PLACE / FOUND_AT_DIFFERENT_ADDRESS / UNVERIFIED. Accessibility is accepted only
+  when Gemini's grounding metadata cites a Maps source; only `place_id` is stored.
+
+## Labels on every fact
+🕰️ FEMA record (historical) · 🟢 Google Maps (live) · 📊 measured (Census) · 🧮 modeled (CDC) ·
+🌊 FEMA hazard model · ❓ unrecorded (never "no") · 🗺️ county-level only · 📏 straight-line · 🚗 Google Maps drive time
+
+## Run / deploy / evaluate
 ```bash
-cd agent && adk deploy cloud_run --project qwiklabs-gcp-04-9708a89bd955 --region us-east1 \
+python -m venv .venv && .venv/bin/pip install -r agent/evac_agent/requirements.txt
+cp agent/evac_agent/.env.example agent/evac_agent/.env && gcloud auth application-default login
+.venv/bin/python agent/sql/build_derived.py              # after scripts/load.sh FL
+cd agent && ../.venv/bin/python run_test.py "Which census tracts in Florida should we prioritize, and why?"
+adk deploy cloud_run --project qwiklabs-gcp-04-9708a89bd955 --region us-east1 \
   --service_name evac-readiness-agent --with_ui \
   --env GOOGLE_GENAI_USE_VERTEXAI=TRUE --env GOOGLE_CLOUD_PROJECT=qwiklabs-gcp-04-9708a89bd955 \
   --env GOOGLE_CLOUD_LOCATION=global \
   --provider-args=--min-instances=1 --provider-args=--memory=2Gi --provider-args=--timeout=600 evac_agent
+python evals/run_evals.py                                 # 25 cases vs the deployed agent
 ```
-
-Data findings: `docs/data_findings.md`. Profiling scripts: `data/explore/`.
