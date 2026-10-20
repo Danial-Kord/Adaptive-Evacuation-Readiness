@@ -281,15 +281,45 @@ export function StoryPage({ county, onAsk, theme = "base" }: { county: { name: s
                 <span className={`hood-score cat-${Math.min(5, Math.max(1, Math.floor((t.priority_points - 50) / 10) + 1))}`}><b>{Math.round(t.priority_points)}</b><small>of 100</small></span>
               </button>
             ))}
-            {pri && (
-              <details className="story-how">
-                <summary>How is this ranked?</summary>
-                <p>Each neighborhood is compared with every neighborhood in Florida on five things: households without a car, residents aged 65+, adults with a mobility disability (estimated), mobile homes, and coastal-flood exposure. {pri.weights_sentence}</p>
-                <button className="link-btn" onClick={() => onAsk(`Weight disability double and rank ${county.name} County again. What changes?`)}>Ask the assistant to change what matters most →</button>
-              </details>
-            )}
+
           </div>
-          <StoryMap tracts={tracts} shelters={shelters} selected={selected} onSelect={setSelected} />
+          <div className="story-right">
+            <StoryMap tracts={tracts} shelters={shelters} selected={selected} onSelect={setSelected} />
+            {pri && sel && (
+                <div className="why-box" aria-label="Why this neighborhood ranks here">
+                  <div className="why-head">
+                    <div>
+                      <b>Why {shortPlace(sel.place)} ranks #{tracts.findIndex((x) => x.geo_id === sel.geo_id) + 1} in {county.name} County</b>
+                      <span>Bars show how it compares with every neighborhood in Florida (100 = highest need)</span>
+                    </div>
+                    <span className="why-score">{Math.round(sel.priority_points)}<small>of 100</small></span>
+                  </div>
+                  <ul className="why-rows">
+                    {([
+                      ["no_car", "🚌", "Households without a car", fmt(sel.hh_no_vehicle), ""],
+                      ["older", "👵", "Residents 65+", fmt(sel.pop_65_plus), ""],
+                      ["disability", "♿", "Mobility disability", `~${fmt(sel.mobility_disabled_modeled)}`, "estimated"],
+                      ["mobile_homes", "🏠", "Mobile homes", fmt(sel.mobile_homes), ""],
+                      ["flood", "🌊", "Coastal-flood exposure", `${fmt(sel.pct_coastal_flood_exposed)}%`, "FEMA model"],
+                    ] as const).map(([key, icon, label, count, note]) => {
+                      const w = Number(pri.weights_used?.[key] ?? 1);
+                      const pts = Number(sel.points?.[key] ?? 0);
+                      return (
+                        <li key={key} className={w === 0 ? "off" : ""}>
+                          <span className="why-label"><span aria-hidden="true">{icon}</span> {label}{note && <small> ({note})</small>}</span>
+                          <span className="why-count">{count}</span>
+                          <span className={`why-weight w${Math.min(w, 3)}`}>{w === 0 ? "not counted" : w === 1 ? "counts once" : w === 2 ? "counts double" : `counts ×${w}`}</span>
+                          <span className="why-bar"><i style={{ width: `${pts}%` }} /></span>
+                          <span className="why-pts">{Math.round(pts)}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="why-note">Only neighborhoods an evacuation order would cover are ranked: 25% or more of residents exposed to coastal flooding, or 10% or more mobile homes.</p>
+                  <button className="link-btn" onClick={() => onAsk(`Weight disability double and rank ${county.name} County again. What changes?`)}>Change what matters most →</button>
+                </div>
+              )}
+          </div>
         </div>
       </section>
 
