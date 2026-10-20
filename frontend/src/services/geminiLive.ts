@@ -1,5 +1,5 @@
 import { AgentProgress, streamAgentMessage } from "./agentApi";
-import { MapsGroundingChunk } from "../types/brief";
+import { AgentSchemaOutput, MapsGroundingChunk, RecommendedAction } from "../types/brief";
 
 export type LiveVoiceStatus =
   | "idle"
@@ -15,6 +15,8 @@ export interface LiveTurnResult {
   tools_called?: string[];
   elapsed_seconds?: number;
   grounding_chunks?: MapsGroundingChunk[];
+  recommended_actions?: RecommendedAction[];
+  agent_outputs?: AgentSchemaOutput[];
 }
 
 export interface GeminiLiveCallbacks {
@@ -345,6 +347,12 @@ export class GeminiLiveSession {
             grounding_chunks: Array.isArray(msg.grounding_chunks)
               ? msg.grounding_chunks
               : undefined,
+            recommended_actions: Array.isArray(msg.recommended_actions)
+              ? msg.recommended_actions
+              : undefined,
+            agent_outputs: Array.isArray(msg.agent_outputs)
+              ? msg.agent_outputs
+              : undefined,
           });
         }
         this.currentUserTranscript = "";
@@ -550,12 +558,14 @@ export class GeminiLiveSession {
       );
 
       if (!this.active) {
-        this. callbacks.onTurnComplete({
+        this.callbacks.onTurnComplete({
           userText,
           agentText: res.reply,
           tools_called: res.tools_called,
           elapsed_seconds: res.elapsed_seconds,
           grounding_chunks: res.grounding_chunks,
+          recommended_actions: res.recommended_actions,
+          agent_outputs: res.agent_outputs,
         });
         return;
       }
@@ -567,6 +577,8 @@ export class GeminiLiveSession {
         tools_called: res.tools_called,
         elapsed_seconds: res.elapsed_seconds,
         grounding_chunks: res.grounding_chunks,
+        recommended_actions: res.recommended_actions,
+        agent_outputs: res.agent_outputs,
       });
 
       this.speakWithBrowserSynthesis(res.reply);

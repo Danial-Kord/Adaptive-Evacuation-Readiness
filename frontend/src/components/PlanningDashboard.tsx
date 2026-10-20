@@ -1,36 +1,169 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchDashboard, COUNTIES } from "../services/dashboardApi";
 import { DashboardData, displayNumber as fmt, DashboardShelter, DashboardTract } from "../services/dashboardData";
+import { buildStarterAgentBriefing } from "../services/agentApi";
+import { ActionDecisionRecord, ActionDecisionStatus, RecommendedAction } from "../types/brief";
 import { CountyMap } from "./CountyMap";
-import { ChatPanel } from "./ChatPanel";
+import { ChatPanel, ExternalDecisionTrigger } from "./ChatPanel";
+import { FocusLocationTarget } from "./AgentSchemaCards";
 import { AreaDetailsPanel } from "./AreaDetailsPanel";
 
 const share = (value: number | null) => value === null ? "Unrecorded" : `${fmt(value)}%`;
 
 export type PlanningView = "overview" | "priority" | "shelters" | "gaps" | "sources";
-interface Props { view: PlanningView; county: typeof COUNTIES[number]; mode: "live" | "preview"; refresh: number; onPreview: () => void }
-export function PlanningDashboard({ view, county, mode, refresh, onPreview, hideAssistant = false }: Props & { hideAssistant?: boolean }) {
+interface Props {
+  view: PlanningView;
+  county: typeof COUNTIES[number];
+  mode: "live" | "preview";
+  refresh: number;
+  onPreview: () => void;
+  hideAssistant?: boolean;
+  sharedActions?: RecommendedAction[];
+  sharedDecisions?: Record<string, ActionDecisionRecord>;
+  onSharedDecisionsChange?: React.Dispatch<React.SetStateAction<Record<string, ActionDecisionRecord>>>;
+  selectedOptionsByAction?: Record<string, string>;
+  onSelectActionOption?: (actionId: string, optionId: string) => void;
+  activeActionId?: string | null;
+  onActiveActionChange?: (actionId: string | null) => void;
+  focusTarget?: FocusLocationTarget | null;
+  onFocusTargetChange?: (target: FocusLocationTarget | null) => void;
+  onDecideFromMap?: (
+    action: RecommendedAction,
+    decision: ActionDecisionStatus,
+    selectedOptionId?: string,
+    note?: string,
+    sendFollowUp?: boolean
+  ) => void;
+  onAskExternal?: (text: string) => void;
+}
+export function PlanningDashboard({
+  view,
+  county,
+  mode,
+  refresh,
+  onPreview,
+  hideAssistant = false,
+  sharedActions: externalActions,
+  sharedDecisions: externalDecisions,
+  onSharedDecisionsChange: externalOnDecisionsChange,
+  selectedOptionsByAction: externalSelectedOptions,
+  onSelectActionOption: externalOnSelectOption,
+  activeActionId: externalActiveActionId,
+  onActiveActionChange: externalOnActiveActionChange,
+  focusTarget: externalFocusTarget,
+  onFocusTargetChange: externalOnFocusTargetChange,
+  onDecideFromMap: externalOnDecideFromMap,
+  onAskExternal,
+}: Props) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<{kind: "shelter" | "tract"; id: string} | null>(null);
   const [inspectedPoint, setInspectedPoint] = useState<{lat: number; lng: number; label?: string} | null>(null);
   const [radiusKm, setRadiusKm] = useState<number>(15);
-  const [question, setQuestion] = useState<{text: string; id: number} | null>(null);
+  const [question, setQuestion] = useState<{text: string; id: number; send?: boolean} | null>(null);
   const [accessFilter, setAccessFilter] = useState("ALL");
   const [retry, setRetry] = useState(0);
+
+  // Shared state between CountyMap and ChatPanel so actions, option selections, FROM->TO zoom, and Approve/Reject dismissals stay 100% synchronized
+  const [internalActions, setInternalActions] = useState<RecommendedAction[]>(() => buildStarterAgentBriefing(county.name).actions);
+  const [internalDecisions, setInternalDecisions] = useState<Record<string, ActionDecisionRecord>>({});
+  const [internalSelectedOptions, setInternalSelectedOptions] = useState<Record<string, string>>({});
+  const [internalActiveActionId, setInternalActiveActionId] = useState<string | null>(null);
+  const [internalFocusTarget, setInternalFocusTarget] = useState<FocusLocationTarget | null>(null);
+  const [externalDecisionTrigger, setExternalDecisionTrigger] = useState<ExternalDecisionTrigger | null>(null);
+
+  const sharedActions = externalActions ?? internalActions;
+  const sharedDecisions = externalDecisions ?? internalDecisions;
+  const setSharedDecisions = externalOnDecisionsChange ?? setInternalDecisions;
+  const selectedOptionsByAction = externalSelectedOptions ?? internalSelectedOptions;
+  const activeActionId = externalActiveActionId !== undefined ? externalActiveActionId : internalActiveActionId;
+  const setActiveActionId = externalOnActiveActionChange ?? setInternalActiveActionId;
+  const focusTarget = externalFocusTarget !== undefined ? externalFocusTarget : internalFocusTarget;
+  const setFocusTarget = externalOnFocusTargetChange ?? setInternalFocusTarget;
+
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setError(""); setSelected(null); setInspectedPoint(null); setQuestion(null);
+    setInternalActions(buildStarterAgentBriefing(county.name).actions);
+    setInternalDecisions({}); setInternalSelectedOptions({}); setInternalActiveActionId(null); setInternalFocusTarget(null);
     fetchDashboard(county.fips, mode, controller.signal)
       .then(d => { if (!controller.signal.aborted) setData(d); })
       .catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Unable to load county records."); });
     return () => controller.abort();
-  }, [county.fips, mode, refresh, retry]);
+  }, [county.fips, county.name, mode, refresh, retry]);
+
+  const pendingActions = useMemo(
+    () => sharedActions.filter(a => !sharedDecisions[a.action_id]),
+    [sharedActions, sharedDecisions]
+  );
+
+  // Keep activeActionId pointed at a valid pending action
+  useEffect(() => {
+    if (!pendingActions.length) {
+      setActiveActionId(null);
+      return;
+    }
+    if (!activeActionId || !pendingActions.some(a => a.action_id === activeActionId)) {
+      setActiveActionId(pendingActions[0].action_id);
+    }
+  }, [pendingActions, activeActionId, setActiveActionId]);
+
   const select = useCallback((kind: "shelter" | "tract", id: string) => setSelected({kind, id}), []);
   const inspectPoint = useCallback((lat: number, lng: number, label?: string) => {
     setInspectedPoint({ lat, lng, label });
   }, []);
-  const ask = (text: string) => setQuestion({text, id: Date.now()});
+
+  const handleSelectActionOption = useCallback((actionId: string, optionId: string) => {
+    setInternalSelectedOptions(prev => ({ ...prev, [actionId]: optionId }));
+    externalOnSelectOption?.(actionId, optionId);
+    setActiveActionId(actionId);
+  }, [externalOnSelectOption, setActiveActionId]);
+
+  const handleFocusFromWidget = useCallback((target: FocusLocationTarget) => {
+    if (target.actionId) {
+      setActiveActionId(target.actionId);
+    }
+    if (target.kind === "tract" && target.id) {
+      setSelected({ kind: "tract", id: target.id });
+    } else if (target.kind === "shelter" && target.id) {
+      setSelected({ kind: "shelter", id: target.id });
+    }
+    if (typeof target.latitude === "number" && typeof target.longitude === "number") {
+      setInspectedPoint({ lat: target.latitude, lng: target.longitude, label: target.label });
+    }
+    setFocusTarget({ ...target });
+  }, [setActiveActionId, setFocusTarget]);
+
+  const handleDecideFromMap = useCallback(
+    (
+      action: RecommendedAction,
+      decision: ActionDecisionStatus,
+      selectedOptionId?: string,
+      note?: string,
+      sendFollowUp = false
+    ) => {
+      if (externalOnDecideFromMap) {
+        externalOnDecideFromMap(action, decision, selectedOptionId, note, sendFollowUp);
+        return;
+      }
+      setExternalDecisionTrigger({
+        id: Date.now(),
+        action,
+        decision,
+        selectedOptionId,
+        note,
+        sendFollowUp,
+      });
+    },
+    [externalOnDecideFromMap]
+  );
+  const ask = (text: string) => {
+    if (onAskExternal) {
+      onAskExternal(text);
+    } else {
+      setQuestion({text, id: Date.now(), send: true});
+    }
+  };
   const selectedShelter = selected?.kind === "shelter" ? data?.shelters.find(s => s.id === selected.id) : null;
   const selectedTract = selected?.kind === "tract" ? data?.tracts.find(t => t.id === selected.id) : null;
   const selectedEntity = selectedShelter || selectedTract || null;
@@ -70,6 +203,15 @@ export function PlanningDashboard({ view, county, mode, refresh, onPreview, hide
             inspectedPoint={activeInspectPoint}
             radiusKm={radiusKm}
             onInspectPoint={inspectPoint}
+            pendingActions={pendingActions}
+            activeActionId={activeActionId}
+            onSelectAction={setActiveActionId}
+            selectedOptionsByAction={selectedOptionsByAction}
+            onSelectActionOption={handleSelectActionOption}
+            decisions={sharedDecisions}
+            onDecideAction={handleDecideFromMap}
+            focusTarget={focusTarget}
+            onFocusLocation={handleFocusFromWidget}
           />
         )}
         {(selectedShelter || selectedTract) && detail((selectedShelter || selectedTract)!)}
@@ -100,7 +242,28 @@ export function PlanningDashboard({ view, county, mode, refresh, onPreview, hide
       </>}
       <footer className="planning-footer">Preparedness planning · historical records · unknown means unrecorded</footer>
     </main>
-    {!hideAssistant && <aside className="planning-assistant" aria-label="Planning assistant"><ChatPanel key={county.fips} stateCode="FL" county={county.name} compact suggestedQuestion={question} />{mode === "preview" && <p className="panel-footnote">Assistant requests still use the live service. Preview rows are not sent as evidence.</p>}</aside>}
+    {!hideAssistant && (
+      <aside className="planning-assistant" aria-label="Planning assistant">
+        <ChatPanel
+          key={county.fips}
+          stateCode="FL"
+          county={county.name}
+          compact
+          suggestedQuestion={question}
+          onFocusLocation={handleFocusFromWidget}
+          dashboardData={data}
+          sharedDecisions={sharedDecisions}
+          onSharedDecisionsChange={setSharedDecisions}
+          selectedOptionsByAction={selectedOptionsByAction}
+          onSelectActionOption={handleSelectActionOption}
+          activeActionId={activeActionId}
+          onActiveActionChange={setActiveActionId}
+          onActionsSync={setInternalActions}
+          externalDecisionTrigger={externalDecisionTrigger}
+        />
+        {mode === "preview" && <p className="panel-footnote">Assistant requests still use the live service. Preview rows are not sent as evidence.</p>}
+      </aside>
+    )}
   </div>;
 }
 function Metric({icon, title, value, note, amber = false}: {icon: string; title: string; value: string; note: string; amber?: boolean}) {
