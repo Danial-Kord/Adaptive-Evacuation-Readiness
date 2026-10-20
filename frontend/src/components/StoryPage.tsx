@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { HeroArt, Theme } from "./HeroArt";
+import { MapsAttribution } from "./MapsAttribution";
+import { OpenHoursHistogram } from "./OpenHoursHistogram";
+import { fetchShelterGoogleMaps, ShelterGoogleMapsDetail } from "../services/dashboardApi";
+import { AccessStatus, DashboardShelter } from "../services/dashboardData";
 
 /* The main page: the county's readiness story, told as the three questions a manager asks.
    Data comes from /api/story/*, which calls the same tools the assistant uses. */
@@ -36,12 +40,87 @@ function MapsLink({ line }: { line?: string }) {
   );
 }
 
+function toAccessStatus(val: any): AccessStatus {
+  if (val === "YES" || val === true) return "YES";
+  if (val === "NO" || val === false) return "NO";
+  return "UNRECORDED";
+}
+
+function toDashboardShelter(s: Any): DashboardShelter {
+  const streetAddress = String(s.address_1 || "").trim();
+  const city = String(s.city || "").trim();
+  const zip = String(s.zip || "").trim();
+  return {
+    id: String(s.shelter_id || s.shelter_name || ""),
+    label: String(s.shelter_name || "Unnamed shelter"),
+    position: s.latitude != null && s.longitude != null ? [Number(s.latitude), Number(s.longitude)] : null,
+    access: toAccessStatus(s.wheelchair_status),
+    generator: toAccessStatus(s.generator_status),
+    surge: toAccessStatus(s.surge_status ?? s.in_surge_slosh_area),
+    capacity: s.evacuation_capacity != null ? Number(s.evacuation_capacity) : null,
+    postCapacity: s.post_impact_capacity != null ? Number(s.post_impact_capacity) : null,
+    medical: toAccessStatus(s.medical_status ?? s.is_medical),
+    selfSufficientPower: toAccessStatus(s.self_sufficient_status),
+    floodplain100yr: toAccessStatus(s.floodplain_status),
+    pets: String(s.pets || "").trim() || "UNRECORDED",
+    populationCode: "UNRECORDED",
+    usage: String(s.usage || "EVAC"),
+    address: [streetAddress, city].filter(Boolean).join(", ") || "Address not recorded",
+    streetAddress,
+    city,
+    zip,
+    nearbyNoVehicle5km: 0,
+    siteCoastalFloodShare: null,
+  };
+}
+
 function StoryMap({ tracts, shelters, selected, onSelect }: {
   tracts: Any[]; shelters: Any[]; selected?: string; onSelect: (geo: string) => void;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
+  const shelterMarkersRef = useRef<Map<string, { marker: L.CircleMarker; status: string }>>(new Map());
+  const hideTimerRef = useRef<number | null>(null);
+  const pinnedRef = useRef<boolean>(false);
+  const lastFitKey = useRef<string>("");
+  const [selectedShelter, setSelectedShelter] = useState<DashboardShelter | null>(null);
+  const [cardPos, setCardPos] = useState<{ left: number; top: number } | null>(null);
+  const [mapsCache, setMapsCache] = useState<Record<string, ShelterGoogleMapsDetail>>({});
+  const [loadingMaps, setLoadingMaps] = useState(false);
+
+  const clearHideTimer = () => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
+
+  const scheduleHide = () => {
+    clearHideTimer();
+    if (pinnedRef.current) return;
+    hideTimerRef.current = window.setTimeout(() => {
+      setSelectedShelter(null);
+    }, 220);
+  };
+
+  const updateCardPosition = (shelter: DashboardShelter | null) => {
+    if (!shelter?.position || !map.current || !el.current) {
+      setCardPos(null);
+      return;
+    }
+    const pt = map.current.latLngToContainerPoint(shelter.position);
+    const w = el.current.clientWidth || 560;
+    const h = el.current.clientHeight || 460;
+    const cardW = 320;
+    const cardH = 220;
+    const placeRight = pt.x < w / 2;
+    const rawLeft = placeRight ? pt.x + 14 : pt.x - cardW - 14;
+    const left = Math.max(10, Math.min(rawLeft, w - cardW - 10));
+    const top = Math.max(10, Math.min(pt.y - 70, h - cardH - 10));
+    setCardPos({ left, top });
+  };
+
   useEffect(() => {
     if (!el.current) return;
     map.current = L.map(el.current, { scrollWheelZoom: false, zoomControl: true }).setView([26.6, -81.85], 10);
@@ -50,18 +129,113 @@ function StoryMap({ tracts, shelters, selected, onSelect }: {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map.current);
     layer.current = L.layerGroup().addTo(map.current);
-    return () => { map.current?.remove(); map.current = null; };
+    map.current.on("click", () => {
+      clearHideTimer();
+      pinnedRef.current = false;
+      setSelectedShelter(null);
+    });
+    return () => {
+      clearHideTimer();
+      map.current?.remove();
+      map.current = null;
+    };
   }, []);
+
+  // Clear selected shelter when switching county (shelter list resets)
+  useEffect(() => {
+    clearHideTimer();
+    pinnedRef.current = false;
+    setSelectedShelter(null);
+  }, [shelters]);
+
+  // Keep floating card anchored next to the shelter marker when panning or zooming
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    updateCardPosition(selectedShelter);
+    const onMove = () => updateCardPosition(selectedShelter);
+    m.on("move zoom", onMove);
+    return () => {
+      m.off("move zoom", onMove);
+    };
+  }, [selectedShelter]);
+
+  // Highlight active shelter marker without recreating Leaflet layers
+  useEffect(() => {
+    shelterMarkersRef.current.forEach(({ marker }, id) => {
+      const isSel = selectedShelter?.id === id;
+      marker.setStyle({
+        radius: isSel ? 8 : 5.5,
+        weight: isSel ? 2.5 : 1.5,
+        color: isSel ? "#14213d" : "#ffffff",
+      });
+    });
+  }, [selectedShelter]);
+
+  // Fetch live Google Maps details for the hovered/clicked shelter (debounced on hover)
+  useEffect(() => {
+    if (!selectedShelter) {
+      setLoadingMaps(false);
+      return;
+    }
+    if (mapsCache[selectedShelter.id]) {
+      setLoadingMaps(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    setLoadingMaps(true);
+    const timer = window.setTimeout(() => {
+      fetchShelterGoogleMaps(selectedShelter, ctrl.signal)
+        .then((res) => {
+          if (!ctrl.signal.aborted) {
+            setMapsCache((prev) => ({ ...prev, [selectedShelter.id]: res }));
+            setLoadingMaps(false);
+          }
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) {
+            setLoadingMaps(false);
+          }
+        });
+    }, 150);
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [selectedShelter, mapsCache]);
+
   useEffect(() => {
     if (!map.current || !layer.current) return;
     layer.current.clearLayers();
+    shelterMarkersRef.current.clear();
     const color: Record<string, string> = { YES: "#2f7d57", NO: "#c0392b", UNRECORDED: "#c9a227" };
     shelters.forEach((s) => {
       if (s.latitude == null) return;
-      L.circleMarker([s.latitude, s.longitude], {
-        radius: 4, weight: 1, color: "#ffffff", fillColor: color[s.wheelchair_status] ?? "#999", fillOpacity: 0.9,
-      }).bindTooltip(`${s.shelter_name} · wheelchair access: ${s.wheelchair_status === "UNRECORDED" ? "never recorded" : s.wheelchair_status.toLowerCase()}`)
+      const ds = toDashboardShelter(s);
+      const marker = L.circleMarker([s.latitude, s.longitude], {
+        radius: 5.5,
+        weight: 1.5,
+        color: "#ffffff",
+        fillColor: color[s.wheelchair_status] ?? "#999",
+        fillOpacity: 0.95,
+      })
+        .on("mouseover", () => {
+          clearHideTimer();
+          if (!pinnedRef.current) {
+            setSelectedShelter(ds);
+          }
+        })
+        .on("mouseout", () => {
+          scheduleHide();
+        })
+        .on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
+          clearHideTimer();
+          pinnedRef.current = true;
+          setSelectedShelter(ds);
+        })
         .addTo(layer.current!);
+      shelterMarkersRef.current.set(ds.id, { marker, status: s.wheelchair_status });
     });
     const pts: L.LatLngExpression[] = [];
     tracts.forEach((t, i) => {
@@ -72,15 +246,126 @@ function StoryMap({ tracts, shelters, selected, onSelect }: {
         icon: L.divIcon({ className: "", html: `<div class="rank-pin ${isSel ? "selected" : ""}">${i + 1}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
       }).on("click", () => onSelect(t.geo_id)).bindTooltip(shortPlace(t.place)).addTo(layer.current!);
     });
-    if (pts.length) map.current.fitBounds(L.latLngBounds(pts).pad(0.35), { maxZoom: 11 });
+    const fitKey = tracts.map((t) => t.geo_id).join(",");
+    if (pts.length && fitKey !== lastFitKey.current) {
+      lastFitKey.current = fitKey;
+      map.current.fitBounds(L.latLngBounds(pts).pad(0.35), { maxZoom: 11 });
+    }
   }, [tracts, shelters, selected, onSelect]);
+
+  const shelterMaps = selectedShelter ? mapsCache[selectedShelter.id] : undefined;
+  const recon = shelterMaps?.reconciliation;
+  const shelterFlags = selectedShelter ? (() => {
+    const items: Array<[string, string]> = [
+      ["Medical", selectedShelter.medical],
+      ["Generator", selectedShelter.generator],
+      ["Self-sufficient", selectedShelter.selfSufficientPower],
+      ["Surge", selectedShelter.surge],
+      ["100-yr flood", selectedShelter.floodplain100yr],
+      ["Pets", selectedShelter.pets],
+    ];
+    return {
+      recorded: items.filter(([, v]) => v && v !== "UNRECORDED"),
+      unrecorded: items.filter(([, v]) => !v || v === "UNRECORDED").map(([k]) => k),
+    };
+  })() : null;
+
   return (
     <div className="story-map-wrap">
-      <div ref={el} className="story-map" />
+      <div className="story-map-stage">
+        <div ref={el} className="story-map" />
+        {selectedShelter && cardPos && (
+          <aside
+            className="story-floating-shelter-card"
+            style={{ left: `${cardPos.left}px`, top: `${cardPos.top}px` }}
+            aria-label="Selected shelter details"
+            onMouseEnter={clearHideTimer}
+            onMouseLeave={scheduleHide}
+          >
+            <div className="story-floating-header">
+              <strong>{selectedShelter.label}</strong>
+              <button
+                type="button"
+                className="story-floating-close"
+                onClick={() => {
+                  clearHideTimer();
+                  pinnedRef.current = false;
+                  setSelectedShelter(null);
+                }}
+                aria-label="Close shelter card"
+              >
+                ×
+              </button>
+            </div>
+            <div className="story-floating-body">
+              <div>
+                <p>
+                  <span>Address & open hours</span>
+                  {selectedShelter.address}{selectedShelter.zip ? ` ${selectedShelter.zip}` : ""}
+                  {loadingMaps ? (
+                    <em className="checking"> · Checking <span translate="no">Google Maps</span>…</em>
+                  ) : shelterMaps ? (
+                    <> ({shelterMaps.placeType} · <b className={`record-badge ${shelterMaps.businessStatus === "OPERATIONAL" ? "yes" : shelterMaps.businessStatus.includes("CLOSED") ? "no" : "unrecorded"}`}>{shelterMaps.businessStatus}</b>)</>
+                  ) : null}
+                </p>
+                {shelterMaps && !loadingMaps && shelterMaps.openHours && (
+                  <OpenHoursHistogram hoursText={shelterMaps.openHours} />
+                )}
+              </div>
+              <p>
+                <span>Capacity & usage</span>
+                {selectedShelter.usage} · Pre-landfall: <b>{fmt(selectedShelter.capacity)}</b> · Post-impact: <b>{fmt(selectedShelter.postCapacity)}</b>
+              </p>
+              <p>
+                <span>♿ Wheelchair accessibility</span>
+                <span className="wheelchair-reconcile-row">
+                  <span className="wheelchair-icon" aria-hidden="true">♿</span>
+                  {loadingMaps ? (
+                    <><b className={`record-badge ${selectedShelter.access.toLowerCase()}`}>{selectedShelter.access}</b> · Source: BigQuery <em className="checking">(checking <span translate="no">Google Maps</span>…)</em></>
+                  ) : recon ? (
+                    <>
+                      <b className={`record-badge ${recon.resolvedAccess.toLowerCase()}`}>{recon.resolvedAccess}</b>
+                      {recon.state === "MATCH" && (
+                        <> · <span className="source-highlight">Source: BigQuery</span> <small>(matched with <span translate="no">Google Maps</span>)</small></>
+                      )}
+                      {recon.state === "CONFLICT" && (
+                        <> · <span className="source-highlight">Source: <span translate="no">Google Maps</span></span> <small>(conflict with BigQuery: {recon.bqAccess})</small></>
+                      )}
+                      {recon.state === "FROM_GOOGLE_MAPS" && (
+                        <> · <span className="source-highlight">Source: <span translate="no">Google Maps</span></span> <small>(BigQuery unrecorded)</small></>
+                      )}
+                      {recon.state === "FROM_BIGQUERY_ONLY" && (
+                        <> · <span className="source-highlight">Source: BigQuery</span> <small>(unlisted on <span translate="no">Google Maps</span>)</small></>
+                      )}
+                      {recon.state === "UNRECORDED" && (
+                        <> · <small>Source: Unrecorded in BigQuery & <span translate="no">Google Maps</span></small></>
+                      )}
+                    </>
+                  ) : (
+                    <><b className={`record-badge ${selectedShelter.access.toLowerCase()}`}>{selectedShelter.access}</b> · Source: BigQuery</>
+                  )}
+                </span>
+              </p>
+              <p>
+                <span>Facility, power & flood flags</span>
+                {shelterFlags?.recorded.map(([k, v], i) => (
+                  <React.Fragment key={k}>{i > 0 ? " · " : ""}{k}: <b className={`record-badge ${v.toLowerCase()}`}>{v}</b></React.Fragment>
+                ))}
+                {shelterFlags && shelterFlags.unrecorded.length > 0 && (
+                  <>{shelterFlags.recorded.length > 0 ? " · " : ""}<small>Unrecorded: {shelterFlags.unrecorded.join(", ")}</small></>
+                )}
+              </p>
+            </div>
+            {shelterMaps && shelterMaps.groundingChunks.length > 0 && (
+              <MapsAttribution chunks={shelterMaps.groundingChunks} />
+            )}
+          </aside>
+        )}
+      </div>
       <div className="story-map-key">
         <span><i className="rank-pin mini">1</i> Priority neighborhood</span>
-        <span><i className="dot" style={{ background: "#2f7d57" }} /> Shelter: wheelchair access recorded</span>
-        <span><i className="dot" style={{ background: "#c9a227" }} /> Shelter: never checked</span>
+        <span><i className="dot" style={{ background: "#2f7d57" }} /> Shelter: wheelchair access recorded (hover or click)</span>
+        <span><i className="dot" style={{ background: "#c9a227" }} /> Shelter: never checked (hover or click)</span>
       </div>
     </div>
   );

@@ -402,6 +402,16 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
 # ---------------------------------------------------------------------------------------------
 # Import the agent's tools once at startup. Importing them lazily inside handlers raced when the page
 # fired several requests at once on a fresh instance (KeyError: 'evac_agent').
+try:
+    import evac_agent as _evac_pkg  # noqa: F401, E402
+except Exception:
+    import sys as _sys  # noqa: E402
+    import types as _types  # noqa: E402
+
+    _evac_pkg = _types.ModuleType("evac_agent")
+    _evac_pkg.__path__ = [str(_AGENT_DIR / "evac_agent")]
+    _sys.modules["evac_agent"] = _evac_pkg
+
 from evac_agent import data as _evac_data  # noqa: E402
 from evac_agent import destination as _evac_destination  # noqa: E402
 from evac_agent import prioritize as _evac_prioritize  # noqa: E402
