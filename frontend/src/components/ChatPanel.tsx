@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { DEPLOYED_CLOUD_RUN_URL, sendAgentMessage } from "../services/agentApi";
 import { MapsGroundingChunk } from "../types/brief";
 import { MapsAttribution } from "./MapsAttribution";
@@ -14,6 +14,8 @@ interface ChatMessage {
 interface ChatPanelProps {
   stateCode?: string;
   county?: string;
+  compact?: boolean;
+  suggestedQuestion?: {text: string; id: number} | null;
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -177,21 +179,31 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode {
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   stateCode = "FL",
   county = "Lee",
+  compact = false,
+  suggestedQuestion,
 }) => {
+  const bottom = useRef<HTMLDivElement>(null);
+  const questionInput = useRef<HTMLInputElement>(null);
   const [sessionId, setSessionId] = useState<string>(
-    () => `web-session-${Math.floor(Date.now() / 1000)}`
+    () => `web-session-${crypto.randomUUID()}`
   );
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "agent",
-      text: `Connected to the deployed **evac_agent** on Google Cloud Run (\`gemini-3.6-flash\` + BigQuery + Grounding with Google Maps).\n\nSelect one of the emergency manager planning questions below or ask your own question about Florida counties, census tracts, or shelters.`,
+      text: `Explore **${county} County, ${stateCode}** data, compare shelter records, and identify what to verify before the season. Select a tract or shelter and choose **Ask assistant** to draft a question.`,
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [connection, setConnection] = useState<"ready" | "connected" | "error">("ready");
+  useEffect(() => {
+    setInput(suggestedQuestion?.text ?? "");
+    if (suggestedQuestion) questionInput.current?.focus();
+  }, [suggestedQuestion]);
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages, loading]);
 
   const handleNewSession = () => {
-    const nextSession = `web-session-${Math.floor(Date.now() / 1000)}`;
+    const nextSession = `web-session-${crypto.randomUUID()}`;
     setSessionId(nextSession);
     setMessages([
       {
@@ -211,6 +223,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     try {
       const res = await sendAgentMessage(query, stateCode, county, sessionId);
+      setConnection("connected");
       setMessages((prev) => [
         ...prev,
         {
@@ -222,6 +235,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         },
       ]);
     } catch (err) {
+      setConnection("error");
       setMessages((prev) => [
         ...prev,
         {
@@ -237,25 +251,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   return (
-    <div className="chat-tab-container">
+    <div className={`chat-tab-container ${compact ? "compact-chat" : ""}`}>
       {/* Top Status & Controls Card */}
       <div className="card chat-status-card">
         <div className="admin-header-top">
           <div>
             <div className="admin-title-row">
-              <h2>ADK Evacuation Readiness Agent (Cloud Run)</h2>
-              <span className="connection-badge live">
-                ● Live Cloud Run: evac-readiness-agent (us-east1)
+              <h2>✧ Planning assistant</h2>
+              <span className={`connection-badge ${connection === "error" ? "preview" : "live"}`}>
+                {loading ? "Working…" : connection === "connected" ? "● Connected" : connection === "error" ? "Connection error" : "Ready to connect"}
               </span>
             </div>
             <p className="admin-subtitle">
-              Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> • App:{" "}
-              <code>evac_agent</code> • Session: <code>{sessionId}</code>
+              {compact ? "Google ADK · Gemini + BigQuery" : <>Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session: <code>{sessionId}</code></>}
             </p>
           </div>
 
           <div className="chat-header-actions">
-            <a
+            {!compact && <a
               href={`${DEPLOYED_CLOUD_RUN_URL}/dev-ui/`}
               target="_blank"
               rel="noopener noreferrer"
@@ -263,7 +276,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               style={{ textDecoration: "none" }}
             >
               ↗ Open Cloud Run ADK Dev UI
-            </a>
+            </a>}
             <button
               type="button"
               className="refresh-btn"
@@ -277,7 +290,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         <div className="chat-prompts-bar">
           <span className="quick-filter-label">Suggested Prompts:</span>
-          {SUGGESTED_QUESTIONS.map((q) => (
+          {(compact ? [
+            `Which tracts in ${county} County should we review first?`,
+            `Which shelters in ${county} County need an accessibility assessment?`,
+          ] : SUGGESTED_QUESTIONS.map(q => q.split("Lee County").join(`${county} County`))).map((q) => (
             <button
               key={q}
               type="button"
@@ -293,7 +309,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Main Conversation Card */}
       <div className="card chat-conversation-card">
-        <div className="chat-messages-large">
+        <div className="chat-messages-large" role="log" aria-label="Agent conversation" aria-live="polite">
           {messages.map((m, i) => (
             <div key={i} className={`chat-bubble ${m.role}`}>
               {m.role === "agent" &&
@@ -331,6 +347,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               </div>
             </div>
           )}
+          <div ref={bottom} />
         </div>
 
         <form
@@ -341,14 +358,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           }}
         >
           <input
+            ref={questionInput}
             type="text"
-            placeholder="Ask evac_agent about vulnerable tracts, wheelchair shelters, drive times, or HHS emPOWER..."
+            aria-label="Question for the planning assistant"
+            placeholder={`Ask about ${county} County…`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={loading}
           />
           <button type="submit" disabled={loading || !input.trim()}>
-            {loading ? "Thinking..." : "Send to Agent"}
+            {loading ? "…" : "Send →"}
           </button>
         </form>
       </div>

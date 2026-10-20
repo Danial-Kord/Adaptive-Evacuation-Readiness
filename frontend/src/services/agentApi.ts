@@ -66,13 +66,14 @@ export async function sendAgentMessage(
   county: string,
   sessionId = "manager-session-01"
 ): Promise<ChatResponse> {
+  const contextualMessage = `[Pre-season planning context: ${county} County, ${state}] ${message}`;
   // 1. Try local FastAPI backend (/api/chat) which proxies to Cloud Run evac_agent
   try {
     const response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        message,
+        message: contextualMessage,
         state,
         county,
         session_id: sessionId,
@@ -109,7 +110,7 @@ export async function sendAgentMessage(
       sessionId,
       newMessage: {
         role: "user",
-        parts: [{ text: message }],
+        parts: [{ text: contextualMessage }],
       },
     }),
   });
