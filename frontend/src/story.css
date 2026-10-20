@@ -191,3 +191,27 @@
 .tag.mild { background: #eef2f7; color: var(--ink-soft); }
 .todo-list .tag { font-size: 13px; margin-left: 8px; }
 .todo-list li > span:first-child { font-weight: 600; color: var(--ink); }
+
+/* "Why it ranks here" breakdown */
+.why-box { margin-top: 6px; border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 16px 18px; }
+.why-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 10px; }
+.why-head b { display: block; font-size: 17px; color: var(--ink); }
+.why-head span { font-size: 13.5px; color: var(--ink-faint); }
+.why-score { font-size: 28px; font-weight: 800; color: var(--ink) !important; text-align: right; line-height: 1; }
+.why-score small { display: block; font-size: 12px; font-weight: 500; color: var(--ink-faint); margin-top: 3px; }
+.why-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.why-rows li { display: grid; grid-template-columns: minmax(0, 1.6fr) 64px 104px minmax(60px, 1fr) 28px; gap: 10px; align-items: center; font-size: 15px; }
+.why-rows li.off { opacity: .45; }
+.why-label small { color: var(--ink-faint); font-size: 12.5px; }
+.why-count { text-align: right; font-weight: 700; color: var(--ink); }
+.why-weight { font-size: 12px; font-weight: 700; text-align: center; padding: 3px 6px; border-radius: 999px; background: #eef2f7; color: var(--ink-soft); white-space: nowrap; }
+.why-weight.w2, .why-weight.w3 { background: var(--storm-soft); color: var(--storm); }
+.why-bar { height: 8px; border-radius: 4px; background: #e6ebf2; overflow: hidden; }
+.why-bar i { display: block; height: 100%; border-radius: 4px; background: var(--storm); }
+.why-pts { text-align: right; font-weight: 700; font-size: 14px; color: var(--ink-soft); }
+.why-note { margin: 12px 0 2px; font-size: 13.5px; line-height: 1.5; color: var(--ink-faint); }
+@media (max-width: 560px) { .why-rows li { grid-template-columns: minmax(0, 1fr) 56px 28px; } .why-weight, .why-bar { display: none; } }
+.story-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.story-right .story-map-wrap { position: static; }
+.why-head .why-score { flex-shrink: 0; }
+.why-head .why-score { font-size: 30px; color: var(--ink); } .why-head .why-score small { font-size: 12px; }
