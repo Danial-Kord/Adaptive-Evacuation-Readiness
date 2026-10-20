@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { DEPLOYED_CLOUD_RUN_URL, sendAgentMessage } from "../services/agentApi";
+import { AgentProgress, DEPLOYED_CLOUD_RUN_URL, streamAgentMessage } from "../services/agentApi";
 import { MapsGroundingChunk } from "../types/brief";
 import { MapsAttribution } from "./MapsAttribution";
 
@@ -27,6 +27,41 @@ const SUGGESTED_QUESTIONS = [
   "Run an equity audit for Lee County evacuation zones.",
   "Give me the full pre-season readiness brief for Lee County.",
 ];
+
+/** What each agent step means, in the manager's words. */
+const STEP_LABELS: Record<string, string> = {
+  prioritization_agent: "Ranking neighborhoods by who would struggle to leave",
+  destination_agent: "Finding shelters people can reach, with drive times from Google Maps",
+  verification_agent: "Checking shelter records against Google Maps",
+  county_gap_report: "Listing what to fix before the season",
+  execute_sql_readonly: "Looking up the county's records",
+  find_shelters: "Finding the shelter in the records",
+  record_shelter_assessment: "Saving the shelter's answers",
+};
+const friendlyStep = (tool: string) => STEP_LABELS[tool] ?? "Looking things up";
+
+const SYMBOLS: [string, string][] = [
+  ["🕰️", "From FEMA's shelter registry (historical record)"],
+  ["🟢", "Checked live on Google Maps just now"],
+  ["📊", "Measured by the Census"],
+  ["🧮", "Estimated (CDC model), not counted"],
+  ["🌊", "FEMA flood/hurricane hazard model"],
+  ["❓", "Nobody recorded this. Unknown, not \"no\""],
+  ["🗺️", "Only available county-wide"],
+  ["📏", "Straight-line distance"],
+  ["🚗", "Driving time from Google Maps"],
+];
+
+/** Drops HTML tags and the agent's one-line symbol legend (the UI shows its own). */
+function cleanAgentText(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => !(/historical FEMA record/.test(l) && /live Google Maps check/.test(l)))
+    .join("\n")
+    .replace(/<br\s*\/?>/gi, " · ")
+    .replace(/<\/?[a-z][^>]*>/gi, "")
+    .trim();
+}
 
 /**
  * Lightweight renderer for the Markdown structure produced by `evac_agent`
@@ -63,7 +98,7 @@ function renderInlineFormatted(text: string): React.ReactNode[] {
   });
 }
 
-function renderMarkdownBlocks(markdown: string): React.ReactNode {
+function renderMarkdownBlocks(markdown: string, stacked = false): React.ReactNode {
   const lines = markdown.split(/\r?\n/);
   const blocks: React.ReactNode[] = [];
   let i = 0;
@@ -85,18 +120,37 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode {
       const headerCells = line
         .trim()
         .replace(/^\||\|$/g, "")
-        .split("|")
-        .map((c) => c.trim());
+        .split(/(?<!\\)\|/)
+        .map((c) => c.replace(/\\\|/g, "|").trim());
       i += 2; // skip header + separator line
       const rows: string[][] = [];
       while (i < lines.length && lines[i].trim().startsWith("|")) {
         const rowCells = lines[i]
           .trim()
           .replace(/^\||\|$/g, "")
-          .split("|")
-          .map((c) => c.trim());
+          .split(/(?<!\\)\|/)
+          .map((c) => c.replace(/\\\|/g, "|").trim());
         rows.push(rowCells);
         i++;
+      }
+      if (stacked) {
+        // Narrow panel: one card per row ("Header: value"), so nothing wraps letter by letter.
+        blocks.push(
+          <div key={`cards-${i}`} className="md-row-cards">
+            {rows.map((r, rIdx) => (
+              <div key={rIdx} className="md-row-card">
+                <div className="md-row-card-title">{renderInlineFormatted(r[0] ?? "")}</div>
+                {r.slice(1).map((cell, cIdx) => (
+                  <div key={cIdx} className="md-row-card-field">
+                    <span className="md-row-card-label">{renderInlineFormatted(headerCells[cIdx + 1] ?? "")}</span>
+                    <span>{renderInlineFormatted(cell)}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        );
+        continue;
       }
       blocks.push(
         <div key={`tbl-${i}`} className="md-table-wrap">
@@ -190,12 +244,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "agent",
-      text: `Explore **${county} County, ${stateCode}** data, compare shelter records, and identify what to verify before the season. Select a tract or shelter and choose **Ask assistant** to draft a question.`,
+      text: `Hi! I can help you plan for **${county} County** before hurricane season. Ask me who would struggle to evacuate, where they could go, or whether a shelter record is still accurate. Pick a suggestion below or type your own question.`,
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [connection, setConnection] = useState<"ready" | "connected" | "error">("ready");
+  const [expanded, setExpanded] = useState(false);
+  const [steps, setSteps] = useState<{ tool: string; done: boolean }[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!loading) return;
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [loading]);
   useEffect(() => {
     setInput(suggestedQuestion?.text ?? "");
     if (suggestedQuestion) questionInput.current?.focus();
@@ -208,7 +271,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setMessages([
       {
         role: "agent",
-        text: `Started new session (\`${nextSession}\`). Ask a question below or click a prompt chip.`,
+        text: "New conversation started. What would you like to know?",
       },
     ]);
   };
@@ -220,9 +283,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setMessages((prev) => [...prev, { role: "user", text: query }]);
     if (!promptText) setInput("");
     setLoading(true);
+    setSteps([]);
+    setStartedAt(Date.now());
 
     try {
-      const res = await sendAgentMessage(query, stateCode, county, sessionId);
+      const res = await streamAgentMessage(query, stateCode, county, sessionId, (p: AgentProgress) => {
+        setSteps((prev) => {
+          if (p.type === "step") {
+            if (prev.some((s) => s.tool === p.tool && !s.done)) return prev;
+            return [...prev, { tool: p.tool, done: false }];
+          }
+          return prev.map((s) => (s.tool === p.tool ? { ...s, done: true } : s));
+        });
+      });
       setConnection("connected");
       setMessages((prev) => [
         ...prev,
@@ -240,9 +313,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         ...prev,
         {
           role: "agent",
-          text: `Error communicating with deployed Cloud Run agent: ${
+          text: `Sorry, something went wrong while I was working on that. Please try again in a moment. (${
             err instanceof Error ? err.message : String(err)
-          }`,
+          })`,
         },
       ]);
     } finally {
@@ -251,7 +324,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   return (
-    <div className={`chat-tab-container ${compact ? "compact-chat" : ""}`}>
+    <div className={`chat-tab-container ${compact ? "compact-chat" : ""} ${expanded ? "chat-expanded" : ""}`}>
       {/* Top Status & Controls Card */}
       <div className="card chat-status-card">
         <div className="admin-header-top">
@@ -259,11 +332,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             <div className="admin-title-row">
               <h2>✧ Planning assistant</h2>
               <span className={`connection-badge ${connection === "error" ? "preview" : "live"}`}>
-                {loading ? "Working…" : connection === "connected" ? "● Connected" : connection === "error" ? "Connection error" : "Ready to connect"}
+                {loading ? "Working…" : connection === "error" ? "Having trouble connecting" : "● Ready"}
               </span>
             </div>
             <p className="admin-subtitle">
-              {compact ? "Google ADK · Gemini + BigQuery" : <>Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session: <code>{sessionId}</code></>}
+              {compact ? "Answers from federal records, checked live on Google Maps" : <>Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session: <code>{sessionId}</code></>}
             </p>
           </div>
 
@@ -277,22 +350,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             >
               ↗ Open Cloud Run ADK Dev UI
             </a>}
+            {compact && (
+              <button type="button" className="refresh-btn" onClick={() => setExpanded((e) => !e)}>
+                {expanded ? "⤡ Shrink" : "⤢ Expand"}
+              </button>
+            )}
             <button
               type="button"
               className="refresh-btn"
               onClick={handleNewSession}
               disabled={loading}
             >
-              + New Session
+              + New conversation
             </button>
           </div>
         </div>
 
         <div className="chat-prompts-bar">
-          <span className="quick-filter-label">Suggested Prompts:</span>
+          <span className="quick-filter-label">Try asking:</span>
           {(compact ? [
-            `Which tracts in ${county} County should we review first?`,
-            `Which shelters in ${county} County need an accessibility assessment?`,
+            `Which neighborhoods in ${county} County should we prioritize, and why?`,
+            `Where would people without a car in the top neighborhood go?`,
+            `Are our ${county} County shelter records accurate and up to date?`,
           ] : SUGGESTED_QUESTIONS.map(q => q.split("Lee County").join(`${county} County`))).map((q) => (
             <button
               key={q}
@@ -316,22 +395,35 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 ((m.tools_called && m.tools_called.length > 0) ||
                   m.elapsed_seconds !== undefined) && (
                   <div className="agent-meta-bar">
-                    {m.tools_called?.map((tool) => (
-                      <span key={tool} className="tool-badge">
-                        🔧 {tool}
-                      </span>
-                    ))}
+                    {m.tools_called
+                      ?.filter((tool) => STEP_LABELS[tool])
+                      .map((tool) => (
+                        <span key={tool} className="tool-badge" title={tool}>
+                          ✓ {friendlyStep(tool)}
+                        </span>
+                      ))}
                     {m.elapsed_seconds !== undefined && (
-                      <span className="elapsed-badge">
-                        ⏱️ {m.elapsed_seconds}s
-                      </span>
+                      <span className="elapsed-badge">Answered in {Math.round(m.elapsed_seconds)}s</span>
                     )}
                   </div>
                 )}
 
               <div className="bubble-text">
-                {m.role === "agent" ? renderMarkdownBlocks(m.text) : m.text}
+                {m.role === "agent" ? renderMarkdownBlocks(cleanAgentText(m.text), compact && !expanded) : m.text}
               </div>
+
+              {m.role === "agent" && SYMBOLS.some(([sym]) => m.text.includes(sym)) && (
+                <details className="symbol-legend">
+                  <summary>What do the symbols mean?</summary>
+                  <ul>
+                    {SYMBOLS.filter(([sym]) => m.text.includes(sym)).map(([sym, meaning]) => (
+                      <li key={sym}>
+                        <span className="symbol-legend-icon">{sym}</span> {meaning}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
 
               {m.grounding_chunks && m.grounding_chunks.length > 0 && (
                 <MapsAttribution chunks={m.grounding_chunks} />
@@ -340,11 +432,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           ))}
 
           {loading && (
-            <div className="chat-bubble agent">
-              <div className="bubble-text">
-                <strong>Running evac_agent on Cloud Run...</strong> Querying BigQuery & verifying live places/routes with{" "}
-                <span translate="no">Google Maps</span> (live verification takes ~12–35s).
+            <div className="chat-bubble agent progress-box" role="status">
+              <div className="progress-title">
+                <span className="loading-ring small" /> Working on it…
+                <span className="progress-elapsed">{startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0}s</span>
               </div>
+              <ul className="progress-steps">
+                <li className="done">✓ Understood your question</li>
+                {steps.map((s) => (
+                  <li key={s.tool} className={s.done ? "done" : "active"}>
+                    {s.done ? "✓" : <span className="step-dot" />} {friendlyStep(s.tool)}
+                  </li>
+                ))}
+                {steps.length > 0 && steps.every((s) => s.done) && (
+                  <li className="active"><span className="step-dot" /> Writing up the answer</li>
+                )}
+              </ul>
+              <p className="progress-note">
+                Most answers take 20–60 seconds. Checking shelters live on <span translate="no">Google Maps</span> takes a little longer.
+              </p>
             </div>
           )}
           <div ref={bottom} />
@@ -367,7 +473,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             disabled={loading}
           />
           <button type="submit" disabled={loading || !input.trim()}>
-            {loading ? "…" : "Send →"}
+            {loading ? "Working…" : "Send →"}
           </button>
         </form>
       </div>

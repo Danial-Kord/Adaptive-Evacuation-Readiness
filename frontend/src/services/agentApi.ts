@@ -66,6 +66,62 @@ function extractMapsSourcesRecursive(
   }
 }
 
+export type AgentProgress = { type: "step" | "step_done"; tool: string };
+
+/**
+ * Streams progress from /api/chat/stream so the UI can show what the agent is doing, then resolves
+ * with the final answer. Falls back to the one-shot sendAgentMessage if streaming is unavailable.
+ */
+export async function streamAgentMessage(
+  message: string,
+  state: string,
+  county: string,
+  sessionId: string,
+  onProgress: (p: AgentProgress) => void
+): Promise<ChatResponse> {
+  const contextualMessage = `[Pre-season planning context: ${county} County, ${state}] ${message}`;
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: contextualMessage, state, county, session_id: sessionId }),
+    });
+  } catch {
+    return sendAgentMessage(message, state, county, sessionId);
+  }
+  if (!response.ok || !response.body) return sendAgentMessage(message, state, county, sessionId);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+      if (!line) continue;
+      const ev = JSON.parse(line.slice(5).trim());
+      if (ev.type === "step" || ev.type === "step_done") onProgress(ev);
+      else if (ev.type === "error") throw new Error(ev.message);
+      else if (ev.type === "final") {
+        return {
+          reply: ev.reply,
+          county,
+          state,
+          tools_called: ev.tools_called,
+          elapsed_seconds: ev.elapsed_seconds,
+          grounding_chunks: ev.grounding_chunks,
+        } as ChatResponse;
+      }
+    }
+  }
+  throw new Error("The connection closed before an answer arrived. Please try again.");
+}
+
 export async function sendAgentMessage(
   message: string,
   state: string,
