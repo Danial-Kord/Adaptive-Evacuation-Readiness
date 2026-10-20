@@ -9,6 +9,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from google import genai
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.cloud import bigquery
@@ -377,3 +378,356 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
     )
+
+
+def _flag_label(val: Any) -> str:
+    if val is True:
+        return "YES"
+    if val is False:
+        return "NO"
+    return "UNRECORDED"
+
+
+@app.get("/api/area/map-points")
+def get_county_map_points(
+    county: str = Query("Lee", description="County name, e.g. Lee, Miami-Dade, Pinellas"),
+) -> Dict[str, Any]:
+    """Return shelters and priority vulnerable census tracts for a county to plot on the interactive map."""
+    try:
+        client, project, dataset = _get_bq_client()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    shelters_sql = f"""
+    SELECT
+      CAST(shelter_id AS STRING) AS shelter_id,
+      shelter_name,
+      address_1,
+      city,
+      COALESCE(county_name, county_parish) AS county_name,
+      county_fips,
+      latitude,
+      longitude,
+      evacuation_capacity,
+      post_impact_capacity,
+      wheelchair_accessible,
+      generator_onsite,
+      in_surge_slosh_area,
+      is_medical,
+      usage
+    FROM `{project}.{dataset}.shelters`
+    WHERE latitude IS NOT NULL
+      AND longitude IS NOT NULL
+      AND (
+        LOWER(COALESCE(county_name, '')) LIKE LOWER(@county_pat)
+        OR LOWER(COALESCE(county_parish, '')) LIKE LOWER(@county_pat)
+      )
+    LIMIT 150
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("county_pat", "STRING", f"%{county.strip()}%")
+        ]
+    )
+
+    shelters_rows = [dict(r.items()) for r in client.query(shelters_sql, job_config=job_config).result()]
+    county_fips = next((r.get("county_fips") for r in shelters_rows if r.get("county_fips")), None)
+
+    shelters_out = [
+        {
+            "shelter_id": r["shelter_id"],
+            "shelter_name": r["shelter_name"],
+            "address_1": r.get("address_1"),
+            "city": r.get("city"),
+            "county_name": r.get("county_name"),
+            "latitude": _sanitize_value(r["latitude"]),
+            "longitude": _sanitize_value(r["longitude"]),
+            "evacuation_capacity": _sanitize_value(r.get("evacuation_capacity")),
+            "post_impact_capacity": _sanitize_value(r.get("post_impact_capacity")),
+            "wheelchair_status": _flag_label(r.get("wheelchair_accessible")),
+            "generator_status": _flag_label(r.get("generator_onsite")),
+            "in_surge_slosh_area": r.get("in_surge_slosh_area"),
+            "is_medical": bool(r.get("is_medical")),
+            "usage": r.get("usage"),
+        }
+        for r in shelters_rows
+    ]
+
+    tracts_out: List[Dict[str, Any]] = []
+    if county_fips:
+        tracts_sql = f"""
+        SELECT
+          v.geo_id,
+          v.county_fips,
+          v.lat,
+          v.lon,
+          v.total_pop,
+          v.households_no_vehicle,
+          v.pct_no_vehicle,
+          v.pop_65_plus,
+          v.pct_age_65_plus,
+          v.pct_disability,
+          v.pct_mobility,
+          v.mobile_homes,
+          h.CFLD_EXPP,
+          h.HRCN_EALT
+        FROM `{project}.{dataset}.vulnerability_tracts` v
+        LEFT JOIN `{project}.{dataset}.hazard_tracts` h
+          ON v.geo_id = h.geo_id
+        WHERE v.county_fips = @county_fips
+          AND v.lat IS NOT NULL
+          AND v.lon IS NOT NULL
+        ORDER BY COALESCE(v.households_no_vehicle, 0) DESC
+        LIMIT 60
+        """
+        t_cfg = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("county_fips", "STRING", str(county_fips))]
+        )
+        for tr in client.query(tracts_sql, job_config=t_cfg).result():
+            d = {k: _sanitize_value(v) for k, v in dict(tr.items()).items()}
+            tracts_out.append(d)
+
+    return {
+        "county": county,
+        "county_fips": county_fips,
+        "shelters": shelters_out,
+        "tracts": tracts_out,
+    }
+
+
+@app.get("/api/area/inspect")
+def inspect_clicked_area(
+    lat: float = Query(..., description="Clicked latitude"),
+    lng: float = Query(..., description="Clicked longitude"),
+    radius_km: float = Query(15.0, ge=1.0, le=80.0, description="Search radius in km"),
+    include_maps: bool = Query(True, description="Whether to run live Vertex AI Google Maps Grounding"),
+) -> Dict[str, Any]:
+    """
+    Fetch comprehensive details for a clicked (lat, lng) coordinate using:
+    1. BigQuery Spatial Queries (`ST_DISTANCE` / `ST_DWITHIN`) across all 5 tables.
+    2. Vertex AI Grounding with Google Maps (Places + Routing) for live area & shelter verification.
+    """
+    t0 = time.time()
+    try:
+        client, project, dataset = _get_bq_client()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    params = [
+        bigquery.ScalarQueryParameter("lat", "FLOAT64", lat),
+        bigquery.ScalarQueryParameter("lng", "FLOAT64", lng),
+        bigquery.ScalarQueryParameter("radius_m", "FLOAT64", radius_km * 1000.0),
+    ]
+    job_config = bigquery.QueryJobConfig(query_parameters=params)
+
+    # 1. Nearest Census Tract (Vulnerability + Hazard)
+    tract_sql = f"""
+    SELECT
+      v.geo_id,
+      v.county_fips,
+      v.lat,
+      v.lon,
+      ROUND(ST_DISTANCE(ST_GEOGPOINT(v.lon, v.lat), ST_GEOGPOINT(@lng, @lat)) / 1000.0, 2) AS distance_km,
+      v.total_pop,
+      v.households,
+      v.households_no_vehicle,
+      ROUND(v.pct_no_vehicle, 1) AS pct_no_vehicle,
+      v.pop_65_plus,
+      ROUND(v.pct_age_65_plus, 1) AS pct_age_65_plus,
+      ROUND(v.pct_disability, 1) AS pct_disability,
+      ROUND(v.pct_mobility, 1) AS pct_mobility,
+      v.mobile_homes,
+      ROUND(v.pct_mobile_homes, 1) AS pct_mobile_homes,
+      ROUND(v.pct_limited_english, 1) AS pct_limited_english,
+      ROUND(v.pct_no_internet, 1) AS pct_no_internet,
+      ROUND(h.HRCN_AFREQ, 2) AS hrcn_afreq,
+      ROUND(h.HRCN_EXPP, 0) AS hrcn_expp,
+      ROUND(h.HRCN_EALT, 0) AS hrcn_ealt,
+      ROUND(h.CFLD_AFREQ, 2) AS cfld_afreq,
+      ROUND(h.CFLD_EXPP, 0) AS cfld_expp,
+      ROUND(h.CFLD_EALT, 0) AS cfld_ealt
+    FROM `{project}.{dataset}.vulnerability_tracts` v
+    LEFT JOIN `{project}.{dataset}.hazard_tracts` h
+      ON v.geo_id = h.geo_id
+    WHERE v.lat IS NOT NULL AND v.lon IS NOT NULL
+    ORDER BY ST_DISTANCE(ST_GEOGPOINT(v.lon, v.lat), ST_GEOGPOINT(@lng, @lat)) ASC
+    LIMIT 1
+    """
+    tract_rows = list(client.query(tract_sql, job_config=job_config).result())
+    nearest_tract = (
+        {k: _sanitize_value(v) for k, v in dict(tract_rows[0].items()).items()}
+        if tract_rows
+        else None
+    )
+
+    # 2. County Power-Dependent DME (HHS emPOWER)
+    county_power = None
+    if nearest_tract and nearest_tract.get("county_fips"):
+        empower_sql = f"""
+        SELECT
+          COALESCE(name, county, namelsad) AS county_name,
+          fips_code_recode AS county_fips,
+          medicare_benes,
+          power_dependent_dme,
+          power_dependent_is_censored,
+          o2_services_any_dme,
+          facility_esrd_dialysis_any_dme,
+          home_health_services_any_dme,
+          athome_hospice_any_dme
+        FROM `{project}.{dataset}.power_dependent_counties`
+        WHERE fips_code_recode = @cfips OR fips_code = @cfips
+        LIMIT 1
+        """
+        emp_cfg = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("cfips", "STRING", str(nearest_tract["county_fips"]))
+            ]
+        )
+        emp_rows = list(client.query(empower_sql, job_config=emp_cfg).result())
+        if emp_rows:
+            county_power = {k: _sanitize_value(v) for k, v in dict(emp_rows[0].items()).items()}
+
+    # 3. Nearby Shelters within radius_km
+    shelters_sql = f"""
+    SELECT
+      CAST(shelter_id AS STRING) AS shelter_id,
+      shelter_name,
+      address_1,
+      city,
+      COALESCE(county_name, county_parish) AS county_name,
+      zip,
+      latitude,
+      longitude,
+      ROUND(ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(@lng, @lat)) / 1000.0, 2) AS distance_km,
+      evacuation_capacity,
+      post_impact_capacity,
+      wheelchair_accessible,
+      generator_onsite,
+      self_sufficient_electricity,
+      in_surge_slosh_area,
+      in_100_yr_floodplain,
+      is_medical,
+      usage
+    FROM `{project}.{dataset}.shelters`
+    WHERE latitude IS NOT NULL
+      AND longitude IS NOT NULL
+      AND ST_DWITHIN(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(@lng, @lat), @radius_m)
+    ORDER BY distance_km ASC
+    LIMIT 8
+    """
+    nearby_shelters = []
+    for r in client.query(shelters_sql, job_config=job_config).result():
+        row_dict = {k: _sanitize_value(v) for k, v in dict(r.items()).items()}
+        row_dict["wheelchair_status"] = _flag_label(row_dict.get("wheelchair_accessible"))
+        row_dict["generator_status"] = _flag_label(row_dict.get("generator_onsite"))
+        nearby_shelters.append(row_dict)
+
+    # 4. Nearby Care Facilities / Nursing Homes within radius_km
+    care_sql = f"""
+    SELECT
+      cms_certification_number_ccn,
+      provider_name,
+      provider_address,
+      citytown,
+      zip_code,
+      number_of_certified_beds,
+      ownership_type,
+      latitude,
+      longitude,
+      ROUND(ST_DISTANCE(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(@lng, @lat)) / 1000.0, 2) AS distance_km
+    FROM `{project}.{dataset}.care_facilities`
+    WHERE latitude IS NOT NULL
+      AND longitude IS NOT NULL
+      AND ST_DWITHIN(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(@lng, @lat), @radius_m)
+    ORDER BY distance_km ASC
+    LIMIT 5
+    """
+    nearby_care = [
+        {k: _sanitize_value(v) for k, v in dict(r.items()).items()}
+        for r in client.query(care_sql, job_config=job_config).result()
+    ]
+
+    # 5. Live Google Maps Grounding (Places + Routing via Vertex AI)
+    maps_summary = ""
+    maps_route: Optional[Dict[str, Any]] = None
+    grounding_chunks: List[MapsGroundingChunk] = []
+    seen_uris: set = set()
+    maps_error: Optional[str] = None
+
+    top_shelter = nearby_shelters[0] if nearby_shelters else None
+    shelter_prompt_part = ""
+    if top_shelter:
+        shelter_prompt_part = (
+            f"\n2) Verify the nearest registered FEMA shelter: \"{top_shelter['shelter_name']}\" at "
+            f"{top_shelter.get('address_1')}, {top_shelter.get('city')}, FL {top_shelter.get('zip') or ''}. "
+            f"State its current Google Maps name, operational status (OPERATIONAL or CLOSED), whether Google Maps "
+            f"lists a wheelchair-accessible entrance, and the driving time and distance from ({lat:.5f}, {lng:.5f}) "
+            f"to this shelter."
+        )
+
+    maps_prompt = (
+        f"A planner clicked the map at coordinates ({lat:.5f}, {lng:.5f}) in Florida.\n"
+        f"Using Google Maps Grounding, provide a concise 3-part live area briefing:\n"
+        f"1) **Clicked Area & Neighborhood**: Identify the neighborhood, city, and major roads/bridges around ({lat:.5f}, {lng:.5f})."
+        f"{shelter_prompt_part}\n"
+        f"3) **Nearby Emergency & Medical Facilities**: List 1-2 nearby hospitals, urgent care centers, or fire/emergency facilities on Google Maps."
+    )
+
+    if include_maps:
+        try:
+            genai_client = genai.Client(vertexai=True, project=project, location="global")
+            model_name = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+            gt = types.GoogleMapsGroundingTypes(
+                places=types.GoogleMapsPlaces(),
+                routing=types.GoogleMapsRouting() if top_shelter else None,
+            )
+            maps_tool = types.Tool(google_maps=types.GoogleMaps(grounding_types=gt))
+
+            resp = genai_client.models.generate_content(
+                model=model_name,
+                contents=maps_prompt,
+                config=types.GenerateContentConfig(tools=[maps_tool], temperature=0.1),
+            )
+            maps_summary = (resp.text or "").strip()
+
+            gm = resp.candidates[0].grounding_metadata if resp.candidates else None
+            for ch in (gm.grounding_chunks if gm and gm.grounding_chunks else []):
+                if not getattr(ch, "maps", None):
+                    continue
+                m = ch.maps
+                if getattr(m, "route", None) and maps_route is None:
+                    secs = float(str(m.route.duration or "0s").rstrip("s") or 0)
+                    maps_route = {
+                        "drive_minutes": round(secs / 60, 1),
+                        "drive_miles": round((m.route.distance_meters or 0) / 1609.34, 1),
+                        "drive_km": round((m.route.distance_meters or 0) / 1000.0, 2),
+                    }
+                    continue
+                uri = getattr(m, "uri", None)
+                if uri and uri not in seen_uris:
+                    seen_uris.add(uri)
+                    grounding_chunks.append(
+                        MapsGroundingChunk(
+                            place_id=getattr(m, "place_id", None),
+                            title=getattr(m, "title", None) or "Google Maps Place",
+                            uri=uri,
+                        )
+                    )
+        except Exception as exc:
+            maps_error = str(exc)[:250]
+
+    return {
+        "coordinates": {"lat": round(lat, 5), "lng": round(lng, 5), "radius_km": radius_km},
+        "elapsed_seconds": round(time.time() - t0, 1),
+        "nearest_tract": nearest_tract,
+        "county_power_dependent": county_power,
+        "nearby_shelters": nearby_shelters,
+        "nearby_care_facilities": nearby_care,
+        "google_maps_live": {
+            "summary": maps_summary,
+            "route_to_nearest_shelter": maps_route,
+            "grounding_chunks": [c.model_dump() for c in grounding_chunks],
+            "error": maps_error,
+        },
+    }

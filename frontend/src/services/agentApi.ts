@@ -5,7 +5,13 @@ import {
   SAMPLE_BQ_OVERVIEW,
   SAMPLE_BQ_ROWS,
 } from "../mocks/sampleBigQueryTables";
-import { ChatResponse, MapsGroundingChunk, ReadinessBriefData } from "../types/brief";
+import {
+  AreaInspectResponse,
+  ChatResponse,
+  CountyMapPointsResponse,
+  MapsGroundingChunk,
+  ReadinessBriefData,
+} from "../types/brief";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 export const DEPLOYED_CLOUD_RUN_URL =
@@ -243,4 +249,35 @@ export async function fetchBigQueryTableRows(params: {
     rows: rows.slice(offset, offset + limit),
   };
 }
+
+export async function fetchCountyMapPoints(county: string): Promise<CountyMapPointsResponse> {
+  const res = await fetch(`${API_BASE}/api/area/map-points?county=${encodeURIComponent(county)}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to fetch map points (${res.status}): ${errText}`);
+  }
+  return res.json();
+}
+
+export async function fetchAreaInspection(params: {
+  lat: number;
+  lng: number;
+  radiusKm?: number;
+  includeMaps?: boolean;
+}): Promise<AreaInspectResponse> {
+  const { lat, lng, radiusKm = 15, includeMaps = true } = params;
+  const qs = new URLSearchParams({
+    lat: String(lat),
+    lng: String(lng),
+    radius_km: String(radiusKm),
+    include_maps: String(includeMaps),
+  });
+  const res = await fetch(`${API_BASE}/api/area/inspect?${qs.toString()}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Failed to inspect area (${res.status}): ${errText}`);
+  }
+  return res.json();
+}
+
 
