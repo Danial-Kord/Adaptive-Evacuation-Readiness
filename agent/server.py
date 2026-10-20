@@ -402,6 +402,16 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
 # ---------------------------------------------------------------------------------------------
 # Import the agent's tools once at startup. Importing them lazily inside handlers raced when the page
 # fired several requests at once on a fresh instance (KeyError: 'evac_agent').
+try:
+    import evac_agent as _evac_pkg  # noqa: F401, E402
+except Exception:
+    import sys as _sys  # noqa: E402
+    import types as _types  # noqa: E402
+
+    _evac_pkg = _types.ModuleType("evac_agent")
+    _evac_pkg.__path__ = [str(_AGENT_DIR / "evac_agent")]
+    _sys.modules["evac_agent"] = _evac_pkg
+
 from evac_agent import data as _evac_data  # noqa: E402
 from evac_agent import destination as _evac_destination  # noqa: E402
 from evac_agent import prioritize as _evac_prioritize  # noqa: E402
@@ -532,6 +542,7 @@ def get_county_map_points(
       shelter_name,
       address_1,
       city,
+      zip,
       COALESCE(county_name, county_parish) AS county_name,
       county_fips,
       latitude,
@@ -540,7 +551,10 @@ def get_county_map_points(
       post_impact_capacity,
       wheelchair_accessible,
       generator_onsite,
+      self_sufficient_electricity,
       in_surge_slosh_area,
+      in_100_yr_floodplain,
+      pet_accommodations_code,
       is_medical,
       usage
     FROM `{project}.{dataset}.shelters`
@@ -568,6 +582,7 @@ def get_county_map_points(
             "shelter_name": r["shelter_name"],
             "address_1": r.get("address_1"),
             "city": r.get("city"),
+            "zip": str(r.get("zip") or "").strip(),
             "county_name": r.get("county_name"),
             "latitude": _sanitize_value(r["latitude"]),
             "longitude": _sanitize_value(r["longitude"]),
@@ -575,9 +590,14 @@ def get_county_map_points(
             "post_impact_capacity": _sanitize_value(r.get("post_impact_capacity")),
             "wheelchair_status": _flag_label(r.get("wheelchair_accessible")),
             "generator_status": _flag_label(r.get("generator_onsite")),
+            "self_sufficient_status": _flag_label(r.get("self_sufficient_electricity")),
+            "surge_status": _flag_label(r.get("in_surge_slosh_area")),
+            "floodplain_status": _flag_label(r.get("in_100_yr_floodplain")),
+            "medical_status": _flag_label(r.get("is_medical")),
+            "pets": str(r.get("pet_accommodations_code") or "").strip() or "UNRECORDED",
             "in_surge_slosh_area": r.get("in_surge_slosh_area"),
             "is_medical": bool(r.get("is_medical")),
-            "usage": r.get("usage"),
+            "usage": r.get("usage") or "EVAC",
         }
         for r in shelters_rows
     ]
@@ -858,6 +878,147 @@ def inspect_clicked_area(
             "grounding_chunks": [c.model_dump() for c in grounding_chunks],
             "error": maps_error,
         },
+    }
+
+
+@app.get("/api/shelters/google-maps")
+def verify_shelter_google_maps(
+    shelter_id: str = Query(..., description="FEMA shelter ID"),
+    name: str = Query(..., description="Recorded shelter name"),
+    address: str = Query("", description="Street address"),
+    city: str = Query("", description="City"),
+    zip_code: str = Query("", description="ZIP code"),
+    bq_access: str = Query("UNRECORDED", description="BigQuery wheelchair_accessible status: YES, NO, or UNRECORDED"),
+) -> Dict[str, Any]:
+    """
+    Live verification of a single FEMA shelter against Vertex AI Grounding with Google Maps,
+    following agent/evac_agent/verify.py and returning open hours + accessibility reconciliation.
+    """
+    t0 = time.time()
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "kaggle-data-486706")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+    prompt = (
+        f"You are checking one entry in FEMA's historical hurricane-shelter registry against Google Maps.\n\n"
+        f"Registry entry: \"{name}\", {address}, {city}, Florida {zip_code}.\n"
+        f"Use Google Maps to answer about THIS building at THIS address only.\n"
+        f"Answer in exactly these lines, plain text, no JSON, no markdown:\n"
+        f"FOUND: yes or no\n"
+        f"MAPS NAME: current name on Google Maps\n"
+        f"MAPS ADDRESS: address on Google Maps\n"
+        f"PLACE TYPE: what kind of place it is\n"
+        f"STATUS: OPERATIONAL, CLOSED_PERMANENTLY, CLOSED_TEMPORARILY or UNKNOWN\n"
+        f"OPEN HOURS: regular opening hours listed on Google Maps (e.g. Mon-Fri 7:30 AM - 4:00 PM), or not listed\n"
+        f"SAME PLACE AS REGISTRY: yes, no or unsure\n"
+        f"WHEELCHAIR ENTRANCE: Google Maps lists a wheelchair accessible entrance / Google Maps says the entrance is not wheelchair accessible / not listed\n"
+        f"ACCESSIBILITY ATTRIBUTES: the accessibility attributes exactly as Google Maps lists them, or none\n"
+        f"NOTES: one short sentence on anything that changed or notable facility details"
+    )
+
+    fields_map = {
+        "FOUND": "found",
+        "MAPS NAME": "maps_name",
+        "MAPS ADDRESS": "maps_address",
+        "PLACE TYPE": "place_type",
+        "STATUS": "business_status",
+        "OPEN HOURS": "open_hours",
+        "SAME PLACE AS REGISTRY": "same_place_as_registry",
+        "WHEELCHAIR ENTRANCE": "wheelchair_accessible_entrance",
+        "ACCESSIBILITY ATTRIBUTES": "accessibility_attributes",
+        "NOTES": "notes",
+    }
+
+    ans: Dict[str, Any] = {}
+    grounded: set = set()
+    grounding_chunks: List[MapsGroundingChunk] = []
+    seen_uris: set = set()
+    err_msg: Optional[str] = None
+
+    try:
+        genai_client = genai.Client(vertexai=True, project=project, location="global")
+        gt = types.GoogleMapsGroundingTypes(places=types.GoogleMapsPlaces())
+        maps_tool = types.Tool(google_maps=types.GoogleMaps(grounding_types=gt))
+
+        for _attempt in range(2):
+            resp = genai_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(tools=[maps_tool], temperature=0.0),
+            )
+            gm = resp.candidates[0].grounding_metadata if resp.candidates else None
+            supports = gm.grounding_supports if gm else None
+            seg_texts = [
+                (sp.segment.text or "").strip()
+                for sp in (supports or [])
+                if getattr(sp, "segment", None) and getattr(sp, "grounding_chunk_indices", None)
+            ]
+            ans = {}
+            grounded = set()
+            for line in (resp.text or "").splitlines():
+                label, _, value = line.strip().strip("*").partition(":")
+                key = fields_map.get(label.strip().upper())
+                if not key:
+                    continue
+                val = value.strip()
+                ans[key] = val
+                if any(t and (t in line or line.strip() in t) for t in seg_texts):
+                    grounded.add(key)
+
+            grounding_chunks = []
+            seen_uris = set()
+            for ch in (gm.grounding_chunks if gm and gm.grounding_chunks else []):
+                if not getattr(ch, "maps", None):
+                    continue
+                m = ch.maps
+                if getattr(m, "route", None):
+                    continue
+                uri = getattr(m, "uri", None)
+                if uri and uri not in seen_uris:
+                    seen_uris.add(uri)
+                    grounding_chunks.append(
+                        MapsGroundingChunk(
+                            place_id=getattr(m, "place_id", None),
+                            title=getattr(m, "title", None) or "Google Maps Place",
+                            uri=uri,
+                        )
+                    )
+            if grounding_chunks:
+                break
+    except Exception as exc:
+        err_msg = str(exc)[:250]
+
+    wc_raw = str(ans.get("wheelchair_accessible_entrance") or "").lower()
+    if "not wheelchair" in wc_raw or wc_raw == "no":
+        maps_access = "NO"
+    elif "lists a wheelchair" in wc_raw or "accessible entrance" in wc_raw or wc_raw == "yes":
+        maps_access = "YES"
+    else:
+        maps_access = "UNLISTED"
+
+    # Follow agent/evac_agent/verify.py: only accept a YES/NO accessibility claim if grounded in Google Maps
+    if maps_access in ("YES", "NO") and grounded and "wheelchair_accessible_entrance" not in grounded and not grounding_chunks:
+        maps_access = "UNLISTED"
+
+    fema_wc = bq_access.upper() if bq_access.upper() in ("YES", "NO", "UNRECORDED") else "UNRECORDED"
+
+    return {
+        "shelter_id": shelter_id,
+        "registry_name": name,
+        "registry_address": f"{address}, {city}".strip(", "),
+        "found": str(ans.get("found", "")).lower().startswith("yes"),
+        "maps_name": ans.get("maps_name") or name,
+        "maps_address": ans.get("maps_address") or f"{address}, {city}".strip(", "),
+        "place_type": ans.get("place_type") or "Not listed",
+        "business_status": str(ans.get("business_status") or "UNKNOWN").upper(),
+        "open_hours": ans.get("open_hours") or "Not listed on Google Maps",
+        "same_place_as_registry": str(ans.get("same_place_as_registry") or "unsure").lower(),
+        "bq_access": fema_wc,
+        "maps_access": maps_access,
+        "accessibility_attributes": ans.get("accessibility_attributes") or "None listed",
+        "notes": ans.get("notes") or "",
+        "grounding_chunks": [c.model_dump() for c in grounding_chunks],
+        "elapsed_seconds": round(time.time() - t0, 1),
+        "error": err_msg,
     }
 
 
