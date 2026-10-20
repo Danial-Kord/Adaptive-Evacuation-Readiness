@@ -59,6 +59,12 @@ of Lee County's capacity on a tract-level proxy). Shelters with no recorded capa
 🕰️ FEMA record (historical) · 🟢 Google Maps (live) · 📊 measured (Census) · 🧮 modeled (CDC) ·
 🌊 FEMA hazard model · ❓ unrecorded (never "no") · 🗺️ county-level only · 📏 straight-line · 🚗 Google Maps drive time
 
+## Sessions survive redeploys
+Conversations are stored in a Vertex AI Agent Engine session store
+(`projects/861336771001/locations/us-central1/reasoningEngines/4476142897879580672`), not in server
+memory, so a redeploy or restart no longer breaks an open chat. **Always deploy with
+`--session_service_uri`** (below); without it ADK falls back to in-memory sessions.
+
 ## Run / deploy / evaluate
 ```bash
 python -m venv .venv && .venv/bin/pip install -r agent/evac_agent/requirements.txt
@@ -67,6 +73,7 @@ cp agent/evac_agent/.env.example agent/evac_agent/.env && gcloud auth applicatio
 cd agent && ../.venv/bin/python run_test.py "Which census tracts in Florida should we prioritize, and why?"
 adk deploy cloud_run --project qwiklabs-gcp-04-9708a89bd955 --region us-east1 \
   --service_name evac-readiness-agent --with_ui \
+  --session_service_uri "agentengine://projects/861336771001/locations/us-central1/reasoningEngines/4476142897879580672" \
   --env GOOGLE_GENAI_USE_VERTEXAI=TRUE --env GOOGLE_CLOUD_PROJECT=qwiklabs-gcp-04-9708a89bd955 \
   --env GOOGLE_CLOUD_LOCATION=global \
   --provider-args=--min-instances=1 --provider-args=--memory=2Gi --provider-args=--timeout=600 evac_agent

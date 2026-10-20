@@ -58,6 +58,9 @@ Manager ─▶ Coordinator (evac_readiness_coordinator)
    └─ verification_agent  (Q3): data_quality_report · verify_shelters_live · find_shelters · google_maps
 ```
 Specialists are wrapped with ADK `AgentTool`; session state (weights, reachability rules) is shared.
+Sessions are stored in a Vertex AI Agent Engine session store (us-central1), so chats survive
+redeploys — deploy with `--session_service_uri` (see `agent/evac_agent/README.md`). Before this fix, a
+redeploy wiped in-memory sessions and follow-up messages hit `404 session not found` (the UI just hangs).
 All on `gemini-3.6-flash` with retry/backoff (the room shares Gemini quota; 429s happen).
 
 ---
