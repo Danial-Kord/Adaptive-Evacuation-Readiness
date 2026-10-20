@@ -68,16 +68,6 @@ interface ChatPanelProps {
 type WidgetTab = "chat" | "actions" | "schemas";
 type ActionFilter = "all" | "pending" | "decided";
 
-const SUGGESTED_QUESTIONS = [
-  "Which neighborhoods in Lee County would struggle most to self-evacuate?",
-  "How many people in Lee County depend on electricity for medical equipment?",
-  "Where would I send the households without a car in tract 12071020801, and how long is the drive?",
-  "Which shelters in Lee County can take a wheelchair, and how many are unrecorded?",
-  "Check if the shelters near North Fort Myers are still open on Google Maps.",
-  "Run an equity audit for Lee County evacuation zones.",
-  "Give me the full pre-season readiness brief for Lee County.",
-];
-
 /** What each agent step means, in the manager's words. */
 const STEP_LABELS: Record<string, string> = {
   prioritization_agent: "Ranking neighborhoods by who would struggle to leave",
@@ -286,16 +276,8 @@ function buildInitialMessages(county: string, stateCode: string): ChatMessage[] 
       id: `starter-${county}-${stateCode}`,
       role: "agent",
       text:
-        `Hi! I've loaded the initial multi-agent readiness briefing for **${county} County, ${stateCode}** below.\n\n` +
-        `Review the **4 specialist agent outputs** (` +
-        "`prioritization_agent`, `destination_agent`, `verification_agent`, `evac_readiness_coordinator`" +
-        `) and use the interactive cards to **Approve**, **Reject**, or **Select Between Options** — or ask a question by text or **Gemini Live Voice**.`,
-      tools_called: [
-        "prioritization_agent",
-        "destination_agent",
-        "verification_agent",
-        "county_gap_report",
-      ],
+        `Hi! I'm your **${county} County, ${stateCode}** evacuation planning assistant.\n\n` +
+        `Ask me anything in plain language — or use **Live Voice** — about neighborhood evacuation priorities, shelter routing and drive times, or live Google Maps facility checks.`,
       recommended_actions: starter.actions,
       agent_outputs: starter.outputs,
     },
@@ -789,7 +771,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         <div className="admin-header-top">
           <div>
             <div className="admin-title-row">
-              <h2>✧ Planning assistant</h2>
+              <h2>✧ Planning Assistant</h2>
               <span
                 className={`connection-badge ${
                   connection === "error" ? "preview" : "live"
@@ -800,10 +782,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
             <p className="admin-subtitle">
               {compact ? (
-                "4 specialist agents · Approve, reject, or select options · Live Voice & Text"
+                `Ask anything about ${county} County evacuation routes, shelters, or readiness.`
               ) : (
                 <>
-                  Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session:{" "}
+                  Ask anything about {county} County readiness · Session:{" "}
                   <code>{sessionId}</code>
                 </>
               )}
@@ -819,7 +801,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 className="schema-toggle-btn"
                 style={{ textDecoration: "none" }}
               >
-                ↗ Open Cloud Run ADK Dev UI
+                ↗ Cloud Run ADK UI
               </a>
             )}
             {compact && (
@@ -847,8 +829,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               className="refresh-btn"
               onClick={handleNewSession}
               disabled={loading}
+              title="Start a fresh conversation"
             >
-              + Reset
+              + New chat
             </button>
           </div>
         </div>
@@ -862,7 +845,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className={`chat-widget-tab ${activeTab === "chat" ? "active" : ""}`}
             onClick={() => setActiveTab("chat")}
           >
-            Chat &amp; Briefings
+            💬 Chat
           </button>
           <button
             type="button"
@@ -871,7 +854,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className={`chat-widget-tab ${activeTab === "actions" ? "active" : ""}`}
             onClick={() => setActiveTab("actions")}
           >
-            Actions &amp; Approvals
+            ✓ Decisions
             {pendingActionsCount > 0 ? (
               <span className="chat-tab-badge chat-tab-badge--pending">
                 {pendingActionsCount}
@@ -887,38 +870,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className={`chat-widget-tab ${activeTab === "schemas" ? "active" : ""}`}
             onClick={() => setActiveTab("schemas")}
           >
-            Agent Schemas
+            📊 Agent Data
             <span className="chat-tab-badge">{allAgentOutputs.length}</span>
           </button>
-        </div>
-
-        {/* Specialist Prompt Chips */}
-        <div className="chat-prompts-bar">
-          <span className="quick-filter-label">Ask an agent:</span>
-          {(compact
-            ? [
-                `Rank priority tracts in ${county} County and propose weight options`,
-                `Plan reachable shelter options for ${county} County's top tracts`,
-                `Verify ${county} County shelters on Google Maps and audit missing fields`,
-                `Give me the full pre-season readiness brief for ${county} County`,
-              ]
-            : SUGGESTED_QUESTIONS.map((q) =>
-                q.split("Lee County").join(`${county} County`)
-              )
-          ).map((q) => (
-            <button
-              key={q}
-              type="button"
-              className="prompt-chip"
-              onClick={() => {
-                setActiveTab("chat");
-                void handleSend(q);
-              }}
-              disabled={loading || voiceStatus === "thinking"}
-            >
-              {q}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -958,30 +912,39 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     : m.text}
                 </div>
 
-                {/* Structured Specialist Agent Output Schemas for this turn */}
+                {/* Structured Specialist Agent Output Schemas for this turn (collapsible to keep chat clean) */}
                 {m.role === "agent" &&
                   Array.isArray(m.agent_outputs) &&
                   m.agent_outputs.length > 0 && (
-                    <div className="chat-turn-schemas">
-                      <div className="chat-section-header">
-                        <span>Structured Agent Output Schemas ({m.agent_outputs.length})</span>
+                    <details className="chat-turn-schemas chat-turn-collapsible">
+                      <summary className="chat-section-header">
+                        <span>
+                          📊 Structured Agent Data ({m.agent_outputs.length}{" "}
+                          {m.agent_outputs.length === 1 ? "report" : "reports"})
+                        </span>
                         <button
                           type="button"
                           className="chat-link-btn"
-                          onClick={() => setActiveTab("schemas")}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setActiveTab("schemas");
+                          }}
                         >
-                          Open Schema Inspector →
+                          Open Agent Data →
                         </button>
+                      </summary>
+                      <div className="chat-turn-collapsible-body">
+                        {m.agent_outputs.map((out, idx) => (
+                          <AgentSchemaOutputView
+                            key={`${m.id}-schema-${idx}`}
+                            output={out}
+                            onFocusLocation={onFocusLocation}
+                            defaultExpanded={idx === 0}
+                          />
+                        ))}
                       </div>
-                      {m.agent_outputs.map((out, idx) => (
-                        <AgentSchemaOutputView
-                          key={`${m.id}-schema-${idx}`}
-                          output={out}
-                          onFocusLocation={onFocusLocation}
-                          defaultExpanded={idx === 0}
-                        />
-                      ))}
-                    </div>
+                    </details>
                   )}
 
                 {/* Interactive Recommended Actions (Approve / Reject / Select Between Options) */}
@@ -993,54 +956,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     );
                     const turnDecidedCount =
                       m.recommended_actions.length - turnPending.length;
+                    const isStarterTurn = m.id.startsWith("starter-");
                     return (
-                      <div className="chat-turn-actions">
-                        <div className="chat-section-header">
+                      <details
+                        className="chat-turn-actions chat-turn-collapsible"
+                        open={!isStarterTurn && turnPending.length > 0}
+                      >
+                        <summary className="chat-section-header">
                           <span>
-                            Recommended Decisions &amp; Options ({turnPending.length} active
-                            {turnDecidedCount > 0 ? ` · ${turnDecidedCount} decided` : ""})
+                            {turnPending.length > 0
+                              ? `⚡ ${turnPending.length} Recommended ${
+                                  turnPending.length === 1 ? "Decision" : "Decisions"
+                                }${turnDecidedCount > 0 ? ` · ${turnDecidedCount} decided` : ""}`
+                              : `✓ All ${m.recommended_actions.length} recommendations decided`}
                           </span>
                           <button
                             type="button"
                             className="chat-link-btn"
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
                               setActionFilter(turnPending.length > 0 ? "pending" : "decided");
                               setActiveTab("actions");
                             }}
                           >
                             {turnPending.length > 0
-                              ? `Decision Queue (${pendingActionsCount} pending) →`
-                              : `View Decided History (${decidedActionsCount}) →`}
+                              ? `All Decisions (${pendingActionsCount}) →`
+                              : `History (${decidedActionsCount}) →`}
                           </button>
+                        </summary>
+                        <div className="chat-turn-collapsible-body">
+                          {turnPending.length === 0 ? (
+                            <div className="chat-all-decided-banner">
+                              ✓ All {m.recommended_actions.length} recommendations in this briefing have been decided and synced with the map.
+                            </div>
+                          ) : (
+                            turnPending.map((act) => (
+                              <RecommendedActionCard
+                                key={`${m.id}-act-${act.action_id}`}
+                                action={act}
+                                decision={decisions[act.action_id]}
+                                selectedOptionId={effectiveSelectedOptions[act.action_id]}
+                                onSelectOption={handleSelectOption}
+                                onDecide={handleActionDecision}
+                                onFocusLocation={(target) => {
+                                  if (target.actionId) {
+                                    onActiveActionChange?.(target.actionId);
+                                  } else {
+                                    onActiveActionChange?.(act.action_id);
+                                  }
+                                  onFocusLocation?.(target);
+                                }}
+                                dashboardData={dashboardData}
+                                isFocusedOnMap={activeActionId === act.action_id}
+                                busy={decidingActionId === act.action_id || loading}
+                              />
+                            ))
+                          )}
                         </div>
-                        {turnPending.length === 0 ? (
-                          <div className="chat-all-decided-banner">
-                            ✓ All {m.recommended_actions.length} recommendations in this briefing have been decided and dismissed from the active Map &amp; Chat views.
-                          </div>
-                        ) : (
-                          turnPending.map((act) => (
-                            <RecommendedActionCard
-                              key={`${m.id}-act-${act.action_id}`}
-                              action={act}
-                              decision={decisions[act.action_id]}
-                              selectedOptionId={effectiveSelectedOptions[act.action_id]}
-                              onSelectOption={handleSelectOption}
-                              onDecide={handleActionDecision}
-                              onFocusLocation={(target) => {
-                                if (target.actionId) {
-                                  onActiveActionChange?.(target.actionId);
-                                } else {
-                                  onActiveActionChange?.(act.action_id);
-                                }
-                                onFocusLocation?.(target);
-                              }}
-                              dashboardData={dashboardData}
-                              isFocusedOnMap={activeActionId === act.action_id}
-                              busy={decidingActionId === act.action_id || loading}
-                            />
-                          ))
-                        )}
-                      </div>
+                      </details>
                     );
                   })()}
 
@@ -1092,13 +1066,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             {(loading || voiceStatus === "thinking" || steps.length > 0) && (
               <div className="chat-bubble agent progress-box" role="status">
                 <div className="progress-title">
-                  <span className="loading-ring small" /> Working on it…
+                  <span className="loading-ring small" /> Thinking…
                   <span className="progress-elapsed">
                     {startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0}s
                   </span>
                 </div>
                 <ul className="progress-steps">
-                  <li className="done">✓ Heard your question</li>
+                  <li className="done">✓ Got your question</li>
                   {steps.map((s) => (
                     <li key={s.tool} className={s.done ? "done" : "active"}>
                       {s.done ? "✓" : <span className="step-dot" />} {friendlyStep(s.tool)}
@@ -1106,14 +1080,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   ))}
                   {steps.length > 0 && steps.every((s) => s.done) && (
                     <li className="active">
-                      <span className="step-dot" /> Preparing structured response
+                      <span className="step-dot" /> Putting together your answer
                     </li>
                   )}
                 </ul>
-                <p className="progress-note">
-                  Most answers take 20–60 seconds. Checking shelters live on{" "}
-                  <span translate="no">Google Maps</span> takes a little longer.
-                </p>
               </div>
             )}
             <div ref={bottom} />
@@ -1125,7 +1095,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div className="chat-messages-large chat-actions-tab-view">
             <div className="chat-subfilter-bar">
               <div className="chat-subfilter-title">
-                <strong>Operator Decision Queue</strong>
+                <strong>Recommended Decisions</strong>
                 <span>
                   {pendingActionsCount} pending · {decidedActionsCount} decided
                 </span>
@@ -1183,8 +1153,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div className="chat-messages-large chat-schemas-tab-view">
             <div className="chat-subfilter-bar">
               <div className="chat-subfilter-title">
-                <strong>Specialist Agent Output Schemas</strong>
-                <span>Structured Pydantic models emitted by each agent</span>
+                <strong>Specialist Agent Data</strong>
+                <span>Detailed reports from each specialist agent</span>
               </div>
               <div className="chat-subfilter-pills">
                 {[
@@ -1210,7 +1180,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
             {filteredSchemas.length === 0 ? (
               <div className="chat-empty-tab">
-                <p>No structured outputs recorded for this agent filter yet.</p>
+                <p>No structured reports recorded for this filter yet.</p>
               </div>
             ) : (
               filteredSchemas.map((out, idx) => (
@@ -1225,12 +1195,145 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
         )}
 
-        {/* Interactive Text Input Bar */}
+        {/* Active Gemini Live Voice Session Banner (only visible when voice is active or has an error) */}
+        {(isVoiceActive || voiceError) && (
+          <div
+            className={`gemini-live-voice-bar ${
+              isVoiceActive ? `active-${voiceStatus}` : ""
+            }`}
+          >
+            {voiceError && (
+              <div className="voice-error-banner" role="alert">
+                <span>⚠️ {voiceError}</span>
+                <button
+                  type="button"
+                  onClick={() => setVoiceError(null)}
+                  aria-label="Dismiss error"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {isVoiceActive && (
+              <div className="voice-active-session">
+                <div className="voice-visualizer-row">
+                  <div
+                    className={`voice-live-orb ${voiceStatus} ${isMuted ? "muted" : ""}`}
+                    style={
+                      {
+                        "--mic-scale": (1 + (isMuted ? 0 : micVolume) * 0.45).toFixed(2),
+                      } as React.CSSProperties
+                    }
+                  >
+                    <div className="voice-wave-bars" aria-hidden="true">
+                      {[0.55, 0.9, 1.25, 0.95, 0.6].map((mult, idx) => {
+                        const heightPct =
+                          voiceStatus === "speaking"
+                            ? 65
+                            : isMuted
+                            ? 18
+                            : Math.max(
+                                20,
+                                Math.min(100, Math.round((0.18 + micVolume * mult) * 100))
+                              );
+                        return (
+                          <span
+                            key={idx}
+                            className={`wave-bar ${
+                              voiceStatus === "speaking" ? "speaking-anim" : ""
+                            }`}
+                            style={{
+                              height: `${heightPct}%`,
+                              animationDelay: `${idx * 0.12}s`,
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="voice-status-info">
+                    <div className="voice-status-headline">
+                      <span className={`voice-status-dot ${voiceStatus}`} />
+                      <strong>
+                        {isMuted
+                          ? "Microphone muted"
+                          : voiceStatus === "connecting"
+                          ? "Connecting to Gemini Live…"
+                          : voiceStatus === "speaking"
+                          ? "Speaking…"
+                          : voiceStatus === "thinking"
+                          ? "Checking county data & Google Maps…"
+                          : `Listening — ask about ${county} County`}
+                      </strong>
+                    </div>
+                    <p className="voice-status-sub">
+                      {voiceDetail || "Speak naturally; you can interrupt anytime."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="voice-action-buttons">
+                  <button
+                    type="button"
+                    className={`voice-ctrl-btn ${isMuted ? "muted-active" : ""}`}
+                    onClick={handleToggleMute}
+                    aria-pressed={isMuted}
+                  >
+                    {isMuted ? "🔇 Unmute" : "🎙️ Mute"}
+                  </button>
+
+                  {voiceStatus === "speaking" && (
+                    <button
+                      type="button"
+                      className="voice-ctrl-btn interrupt-btn"
+                      onClick={handleInterrupt}
+                    >
+                      ⏹ Interrupt
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="voice-ctrl-btn end-voice-btn"
+                    onClick={handleToggleVoice}
+                  >
+                    ✕ End Voice
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Unified Friendly Chat Composer (Text Input + Voice Button + Send) */}
         <form className="chat-text-input-bar" onSubmit={handleTextFormSubmit}>
+          <button
+            type="button"
+            className={`chat-voice-inline-btn ${isVoiceActive ? "active" : ""}`}
+            onClick={handleToggleVoice}
+            disabled={loading}
+            title={
+              isVoiceActive
+                ? "End Gemini Live voice conversation"
+                : `Start a live voice conversation about ${county} County`
+            }
+            aria-label={
+              isVoiceActive
+                ? "End Gemini Live voice conversation"
+                : `Start Gemini Live voice conversation for ${county} County`
+            }
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+            </svg>
+            <span>{isVoiceActive ? "Live" : "Voice"}</span>
+          </button>
           <input
             type="text"
             className="chat-text-input"
-            placeholder={`Ask about ${county} County tracts, shelter routing, or live Google Maps status…`}
+            placeholder={`Message the ${county} County assistant…`}
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             disabled={loading}
@@ -1241,139 +1344,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className="chat-text-send-btn"
             disabled={loading || !textInput.trim()}
           >
-            {loading ? "…" : "Send"}
+            {loading ? "…" : "Send ↑"}
           </button>
         </form>
-
-        {/* Gemini Live Voice Talk Bar */}
-        <div
-          className={`gemini-live-voice-bar ${
-            isVoiceActive ? `active-${voiceStatus}` : ""
-          }`}
-        >
-          {voiceError && (
-            <div className="voice-error-banner" role="alert">
-              <span>⚠️ {voiceError}</span>
-              <button
-                type="button"
-                onClick={() => setVoiceError(null)}
-                aria-label="Dismiss error"
-              >
-                ✕
-              </button>
-            </div>
-          )}
-
-          {!isVoiceActive ? (
-            <div className="voice-idle-controls">
-              <button
-                type="button"
-                className="voice-start-btn"
-                onClick={handleToggleVoice}
-                disabled={loading}
-                aria-label={`Start Gemini Live voice conversation for ${county} County`}
-              >
-                <span className="voice-mic-orb" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
-                  </svg>
-                </span>
-                <span className="voice-start-text">
-                  <strong>Start Gemini Live Voice</strong>
-                  <small>Talk naturally about {county} County evacuation readiness</small>
-                </span>
-              </button>
-            </div>
-          ) : (
-            <div className="voice-active-session">
-              <div className="voice-visualizer-row">
-                <div
-                  className={`voice-live-orb ${voiceStatus} ${isMuted ? "muted" : ""}`}
-                  style={
-                    {
-                      "--mic-scale": (1 + (isMuted ? 0 : micVolume) * 0.45).toFixed(2),
-                    } as React.CSSProperties
-                  }
-                >
-                  <div className="voice-wave-bars" aria-hidden="true">
-                    {[0.55, 0.9, 1.25, 0.95, 0.6].map((mult, idx) => {
-                      const heightPct =
-                        voiceStatus === "speaking"
-                          ? 65
-                          : isMuted
-                          ? 18
-                          : Math.max(
-                              20,
-                              Math.min(100, Math.round((0.18 + micVolume * mult) * 100))
-                            );
-                      return (
-                        <span
-                          key={idx}
-                          className={`wave-bar ${
-                            voiceStatus === "speaking" ? "speaking-anim" : ""
-                          }`}
-                          style={{
-                            height: `${heightPct}%`,
-                            animationDelay: `${idx * 0.12}s`,
-                          }}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="voice-status-info">
-                  <div className="voice-status-headline">
-                    <span className={`voice-status-dot ${voiceStatus}`} />
-                    <strong>
-                      {isMuted
-                        ? "Microphone muted"
-                        : voiceStatus === "connecting"
-                        ? "Connecting to Gemini Live…"
-                        : voiceStatus === "speaking"
-                        ? "Gemini Live is speaking…"
-                        : voiceStatus === "thinking"
-                        ? "Checking county records & Google Maps…"
-                        : `Listening — ask about ${county} County`}
-                    </strong>
-                  </div>
-                  <p className="voice-status-sub">
-                    {voiceDetail || "Speak naturally; you can interrupt at any time."}
-                  </p>
-                </div>
-              </div>
-
-              <div className="voice-action-buttons">
-                <button
-                  type="button"
-                  className={`voice-ctrl-btn ${isMuted ? "muted-active" : ""}`}
-                  onClick={handleToggleMute}
-                  aria-pressed={isMuted}
-                >
-                  {isMuted ? "🔇 Unmute Mic" : "🎙️ Mute Mic"}
-                </button>
-
-                {voiceStatus === "speaking" && (
-                  <button
-                    type="button"
-                    className="voice-ctrl-btn interrupt-btn"
-                    onClick={handleInterrupt}
-                  >
-                    ⏹ Interrupt
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  className="voice-ctrl-btn end-voice-btn"
-                  onClick={handleToggleVoice}
-                >
-                  ✕ End Live Voice
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
