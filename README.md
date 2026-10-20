@@ -939,23 +939,107 @@ it is an automatic rejection, however useful it would have been.
 
 ```
 README.md                             this file
+.env.example                          Environment variable template for ADK, BigQuery & React
 notebooks/
   c4_01_load_explore.ipynb            The main artifact. Run this first
   c4_90_publish_snapshot.ipynb        ROI maintainers only. You do not need it
 scripts/
   load.sh                             Headless fallback if Colab is unavailable
-data/                                 Empty. Everything lives in BigQuery, in your project
-agent/                                Your agent goes here. README.md restates the requirements
+  deploy_cloud_run.sh                 Two-step Cloud Run deployment script (Backend + Frontend)
+data/
+  sql/                                Spatial BigQuery queries (ST_DISTANCE, ST_INTERSECTS, ADA gaps)
+  audit/equity_audit.py               Post-hoc SVI & demographic equity audit script
+  reference/fl_counties.json          Target Florida county metadata
+agent/
+  server.py                           FastAPI server wrapping ADK Runner + BigQuery Admin Explorer API
+  evacuation_agent/                   Google ADK agent (gemini-3.6-flash + google_maps_grounding + tools)
+frontend/
+  src/                                React + TypeScript + Vite UI (Readiness Brief + Data Management tab)
+docs/
+  api_contract.md                     Shared JSON contract between ADK backend and React frontend
+  pitch_outline.md                    Timed 3-minute finalist pitch & demo outline
+  equity_audit_results.md             Equity audit methodology and findings template
 ```
 
 `c4_90_publish_snapshot.ipynb` is for ROI maintainers: it regenerates the Cloud Storage snapshot
 that `scripts/load.sh` reads from. If you run it you will get a permissions error, because you do not
 have write access to our bucket. That is expected, and you never need it.
 
-`agent/` is empty on purpose. We built the on-ramp—every registered shelter in your state, the
+`agent/` is empty on purpose in the starter template. We built the on-ramp—every registered shelter in your state, the
 tracts around them, the counties where people depend on electricity to stay alive, the hazard
 exposure, the licenses checked, and a validation suite that tells you plainly what is wrong with all
 of it. We didn't build the vehicle. [`agent/README.md`](agent/) restates what yours has to do.
+
+---
+
+## Local & Cloud Setup: BigQuery Credentials, ADK Backend & React Frontend
+
+To connect the backend (`agent/server.py`) and the **Data Management (BigQuery)** tab in the React UI to live BigQuery data, you need **two things**:
+1. **Google Application Default Credentials (ADC)** (so Python's `google-cloud-bigquery` and ADK libraries authenticate as your GCP user)
+2. **Your `GOOGLE_CLOUD_PROJECT` ID** in `agent/.env`
+
+You **do not** need to download a Service Account JSON key file (and Qwiklabs / Google Skills environments usually block downloading JSON keys).
+
+### Option A: Running on Your Local Machine (Windows / macOS / Linux)
+
+#### Step 1: Install the Google Cloud CLI (`gcloud`)
+If `gcloud` is not installed locally yet, install the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (on Windows PowerShell: `winget install Google.CloudSDK`, then restart your terminal).
+
+#### Step 2: Authenticate with Application Default Credentials (ADC)
+```powershell
+gcloud auth application-default login
+```
+- Sign in with the **same Google account** that has access to your hackathon GCP project.
+- Make sure the BigQuery dataset is loaded in your project (`bash scripts/load.sh FL` in Cloud Shell, or via `notebooks/c4_01_load_explore.ipynb`).
+
+#### Step 3: Configure `agent/.env`
+Copy `.env.example` to `agent/.env` and set your project ID:
+```powershell
+Copy-Item .env.example agent\.env
+```
+Edit `agent/.env`:
+```ini
+GOOGLE_CLOUD_PROJECT=your-actual-gcp-project-id
+GOOGLE_CLOUD_LOCATION=global
+GOOGLE_GENAI_USE_VERTEXAI=True
+STATE=FL
+BQ_DATASET=evacuation_readiness
+GEMINI_MODEL=gemini-3.6-flash
+```
+
+#### Step 4: Start the ADK Backend & React Frontend
+```powershell
+# Terminal 1 — Start the FastAPI + ADK + BigQuery Admin server (Port 8080)
+cd agent
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1   # On macOS/Linux/Cloud Shell: source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn server:app --reload --port 8080
+
+# Terminal 2 — Start the React + Vite Frontend (Port 5173)
+cd frontend
+npm install
+npm run dev
+```
+Open `http://localhost:5173`:
+- **📋 Readiness Brief tab**: View the county vulnerability map, shelter verification cards with `<span translate="no">Google Maps</span>` attribution, and live ADK agent chat.
+- **🗄️ Data Management (BigQuery) tab**: Browse all 5 BigQuery tables (`shelters`, `vulnerability_tracts`, `hazard_tracts`, `care_facilities`, `power_dependent_counties`), inspect schemas, filter `UNRECORDED` (`NULL`) accessibility rows, and copy the generated BigQuery Standard SQL.
+
+### Option B: Running in Google Cloud Shell
+In Google Cloud Shell, your credentials and `GOOGLE_CLOUD_PROJECT` are already pre-configured:
+```bash
+bash scripts/load.sh FL
+cp .env.example agent/.env
+```
+Then run the same `uvicorn` and `npm run dev` commands above, or deploy both services to Cloud Run with `./scripts/deploy_cloud_run.sh`.
+
+### Option C: (Optional) Using a Service Account JSON Key
+If you are using a personal GCP project and prefer a service account key file over `gcloud auth application-default login`:
+1. Grant the service account **BigQuery Job User** (`roles/bigquery.jobUser`), **BigQuery Data Viewer** (`roles/bigquery.dataViewer`), and **Vertex AI User** (`roles/aiplatform.user`).
+2. Save the key as `agent/gcp-key.local.json` (`*.local` is git-ignored) and add to `agent/.env`:
+   ```ini
+   GOOGLE_APPLICATION_CREDENTIALS=gcp-key.local.json
+   ```
 
 ---
 
