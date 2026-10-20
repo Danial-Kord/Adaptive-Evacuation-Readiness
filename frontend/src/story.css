@@ -215,3 +215,7 @@
 .story-right .story-map-wrap { position: static; }
 .why-head .why-score { flex-shrink: 0; }
 .why-head .why-score { font-size: 30px; color: var(--ink); } .why-head .why-score small { font-size: 12px; }
+
+/* Keep Leaflet's internal z-indexes (controls use 800-1000) inside the map, so the zoom buttons and
+   attribution never draw over the sticky header or the assistant drawer. */
+.leaflet-container, .story-map { position: relative; z-index: 0; isolation: isolate; }
