@@ -3,6 +3,7 @@ import { fetchDashboard, COUNTIES } from "../services/dashboardApi";
 import { DashboardData, displayNumber as fmt, DashboardShelter, DashboardTract } from "../services/dashboardData";
 import { CountyMap } from "./CountyMap";
 import { ChatPanel } from "./ChatPanel";
+import { AreaDetailsPanel } from "./AreaDetailsPanel";
 
 const share = (value: number | null) => value === null ? "Unrecorded" : `${fmt(value)}%`;
 
@@ -12,21 +13,32 @@ export function PlanningDashboard({ view, county, mode, refresh, onPreview }: Pr
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<{kind: "shelter" | "tract"; id: string} | null>(null);
+  const [inspectedPoint, setInspectedPoint] = useState<{lat: number; lng: number; label?: string} | null>(null);
+  const [radiusKm, setRadiusKm] = useState<number>(15);
   const [question, setQuestion] = useState<{text: string; id: number} | null>(null);
   const [accessFilter, setAccessFilter] = useState("ALL");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError(""); setSelected(null); setQuestion(null);
+    setData(null); setError(""); setSelected(null); setInspectedPoint(null); setQuestion(null);
     fetchDashboard(county.fips, mode, controller.signal)
       .then(d => { if (!controller.signal.aborted) setData(d); })
       .catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Unable to load county records."); });
     return () => controller.abort();
   }, [county.fips, mode, refresh, retry]);
   const select = useCallback((kind: "shelter" | "tract", id: string) => setSelected({kind, id}), []);
+  const inspectPoint = useCallback((lat: number, lng: number, label?: string) => {
+    setInspectedPoint({ lat, lng, label });
+  }, []);
   const ask = (text: string) => setQuestion({text, id: Date.now()});
   const selectedShelter = selected?.kind === "shelter" ? data?.shelters.find(s => s.id === selected.id) : null;
   const selectedTract = selected?.kind === "tract" ? data?.tracts.find(t => t.id === selected.id) : null;
+  const selectedEntity = selectedShelter || selectedTract || null;
+  const activeInspectPoint = inspectedPoint ?? (selectedEntity?.position ? {
+    lat: selectedEntity.position[0],
+    lng: selectedEntity.position[1],
+    label: selectedEntity.label,
+  } : null);
   const percent = data?.shelters.length ? 100 * data.access.UNRECORDED / data.shelters.length : null;
   const tracts = data?.tracts.slice(0, view === "priority" ? 50 : 5) || [];
   const filteredShelters = (data?.shelters || []).filter(s => accessFilter === "ALL" || s.access === accessFilter);
@@ -50,8 +62,31 @@ export function PlanningDashboard({ view, county, mode, refresh, onPreview }: Pr
           <Metric icon="♿" title="Accessibility unrecorded" value={percent === null ? "Unavailable" : `${percent.toFixed(1)}%`} note={`${data.access.UNRECORDED} of ${data.shelters.length} shelter records`} amber />
           <Metric icon="♡" title="Power-dependent beneficiaries" value={data.powerCensored ? "1–10" : fmt(data.power)} note={data.powerCensored ? "Privacy-masked · county level" : "HHS emPOWER · county level only"} />
         </div>}
-        {(view === "overview" || view === "priority" || view === "shelters") && <CountyMap data={data} selected={selected} onSelect={select} />}
+        {(view === "overview" || view === "priority" || view === "shelters") && (
+          <CountyMap
+            data={data}
+            selected={selected}
+            onSelect={select}
+            inspectedPoint={activeInspectPoint}
+            radiusKm={radiusKm}
+            onInspectPoint={inspectPoint}
+          />
+        )}
         {(selectedShelter || selectedTract) && detail((selectedShelter || selectedTract)!)}
+        {(view === "overview" || view === "priority" || view === "shelters") && activeInspectPoint && (
+          <AreaDetailsPanel
+            lat={activeInspectPoint.lat}
+            lng={activeInspectPoint.lng}
+            radiusKm={radiusKm}
+            label={activeInspectPoint.label}
+            onRadiusChange={setRadiusKm}
+            onAskAgent={ask}
+            onClose={() => {
+              setInspectedPoint(null);
+              setSelected(null);
+            }}
+          />
+        )}
         {(view === "overview" || view === "priority") && <div className="overview-bottom">
           <section className="planning-card priority-panel"><div className="panel-heading"><div><h2>Priority tracts</h2><p>Ranked by no-vehicle household count</p></div><span className="small-tag">ACS measure</span></div>
             <div className="planning-table-wrap"><table className="planning-table"><thead><tr><th>Tract</th><th>No-vehicle HHs</th><th>Accessible site*</th><th /></tr></thead><tbody>{tracts.map(t => <tr key={t.id} className={selected?.id === t.id ? "selected-row" : ""}><td><button className="text-button" onClick={() => select("tract", t.id)}>{t.id}</button></td><td>{fmt(t.noVehicle)}</td><td>{t.nearestAccessible === null ? "None recorded / no coordinates" : `${t.nearestAccessible.toFixed(1)} km`}</td><td><button aria-label={`View tract ${t.id}`} className="row-arrow" onClick={() => select("tract", t.id)}>›</button></td></tr>)}</tbody></table></div>

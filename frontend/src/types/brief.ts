@@ -85,3 +85,106 @@ export interface ChatResponse {
   agent_url?: string;
   grounding_chunks: MapsGroundingChunk[];
 }
+
+export interface MapShelterPoint {
+  shelter_id: string;
+  shelter_name: string;
+  address_1?: string | null;
+  city?: string | null;
+  county_name?: string | null;
+  zip?: string | null;
+  latitude: number;
+  longitude: number;
+  distance_km?: number;
+  evacuation_capacity?: number | null;
+  post_impact_capacity?: number | null;
+  wheelchair_status: RecordingStatus;
+  generator_status: RecordingStatus;
+  in_surge_slosh_area?: boolean | null;
+  in_100_yr_floodplain?: boolean | null;
+  is_medical?: boolean;
+  usage?: string | null;
+}
+
+export interface MapTractPoint {
+  geo_id: string;
+  county_fips: string;
+  lat: number;
+  lon: number;
+  distance_km?: number;
+  total_pop?: number | null;
+  households?: number | null;
+  households_no_vehicle?: number | null;
+  pct_no_vehicle?: number | null;
+  pop_65_plus?: number | null;
+  pct_age_65_plus?: number | null;
+  pct_disability?: number | null;
+  pct_mobility?: number | null;
+  mobile_homes?: number | null;
+  pct_mobile_homes?: number | null;
+  pct_limited_english?: number | null;
+  pct_no_internet?: number | null;
+  hrcn_afreq?: number | null;
+  hrcn_expp?: number | null;
+  hrcn_ealt?: number | null;
+  cfld_afreq?: number | null;
+  cfld_expp?: number | null;
+  cfld_ealt?: number | null;
+  CFLD_EXPP?: number | null;
+  HRCN_EALT?: number | null;
+}
+
+export interface CountyMapPointsResponse {
+  county: string;
+  county_fips?: string | null;
+  shelters: MapShelterPoint[];
+  tracts: MapTractPoint[];
+}
+
+export interface CareFacilityNearby {
+  cms_certification_number_ccn?: string | null;
+  provider_name: string;
+  provider_address?: string | null;
+  citytown?: string | null;
+  zip_code?: string | null;
+  number_of_certified_beds?: number | null;
+  ownership_type?: string | null;
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+}
+
+export interface CountyPowerDependent {
+  county_name: string;
+  county_fips: string;
+  medicare_benes?: number | null;
+  power_dependent_dme?: number | null;
+  power_dependent_is_censored?: boolean | null;
+  o2_services_any_dme?: number | null;
+  facility_esrd_dialysis_any_dme?: number | null;
+  home_health_services_any_dme?: number | null;
+  athome_hospice_any_dme?: number | null;
+}
+
+export interface AreaInspectResponse {
+  coordinates: {
+    lat: number;
+    lng: number;
+    radius_km: number;
+  };
+  elapsed_seconds: number;
+  nearest_tract: MapTractPoint | null;
+  county_power_dependent: CountyPowerDependent | null;
+  nearby_shelters: MapShelterPoint[];
+  nearby_care_facilities: CareFacilityNearby[];
+  google_maps_live: {
+    summary: string;
+    route_to_nearest_shelter?: {
+      drive_minutes: number;
+      drive_miles: number;
+      drive_km: number;
+    } | null;
+    grounding_chunks: MapsGroundingChunk[];
+    error?: string | null;
+  };
+}
