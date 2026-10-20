@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import datetime as dt
 import json
 import math
 import os
@@ -24,8 +25,18 @@ from google.genai import types
 from evacuation_agent.agent import root_agent
 from evacuation_agent.prompts import SYSTEM_INSTRUCTION
 from evacuation_agent.schemas import (
+    ActionDecisionRequest,
+    ActionDecisionResponse,
+    ActionOption,
+    ActionSeverity,
+    ActionType,
+    AgentSchemaOutput,
+    ApprovalDetails,
+    AttentionItem,
     ChatRequest,
     ChatResponse,
+    InteractionMode,
+    LocationInfo,
     MapsGroundingChunk,
     RecommendedAction,
 )
@@ -340,6 +351,27 @@ def _extract_maps_sources_recursive(
             _extract_maps_sources_recursive(item, seen_uris, out)
 
 
+_TOOL_SCHEMA_MAP: Dict[str, tuple[str, str]] = {
+    "rank_priority_tracts": ("prioritization_agent", "RankPriorityTractsOutput"),
+    "priority_weights": ("prioritization_agent", "PriorityWeightsOutput"),
+    "equity_audit": ("prioritization_agent", "EquityAuditOutput"),
+    "get_vulnerable_tracts": ("prioritization_agent", "RankPriorityTractsOutput"),
+    "plan_evacuation_destinations": ("destination_agent", "PlanDestinationsOutput"),
+    "reachability_rules": ("destination_agent", "ReachabilityRulesOutput"),
+    "verify_shelters_live": ("verification_agent", "VerifySheltersLiveOutput"),
+    "data_quality_report": ("verification_agent", "DataQualityReportOutput"),
+    "record_shelter_assessment": ("verification_agent", "RecordShelterAssessmentOutput"),
+    "county_gap_report": ("evac_readiness_coordinator", "CountyGapReportOutput"),
+    "find_shelters": ("evac_readiness_coordinator", "FindSheltersOutput"),
+    "analyze_shelter_readiness": ("evac_readiness_coordinator", "FindSheltersOutput"),
+    "get_power_and_medical_gaps": ("evac_readiness_coordinator", "CountyGapReportOutput"),
+    "generate_readiness_brief": ("evac_readiness_coordinator", "ReadinessBriefOutput"),
+}
+
+# In-memory decision ledger keyed by session_id -> action_id -> decision dict
+_ACTION_DECISIONS: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
 def _extract_recommended_actions_recursive(
     obj: Any, actions_by_id: Dict[str, RecommendedAction]
 ) -> None:
@@ -368,6 +400,328 @@ def _extract_recommended_actions_recursive(
             _extract_recommended_actions_recursive(item, actions_by_id)
 
 
+def _extract_agent_outputs_recursive(
+    obj: Any, outputs: List[AgentSchemaOutput], seen_keys: set
+) -> None:
+    """Extract structured tool outputs (`functionResponse`) and tag with specialist agent + schema name."""
+    if isinstance(obj, dict):
+        fn_resp = obj.get("functionResponse")
+        if isinstance(fn_resp, dict):
+            fn_name = str(fn_resp.get("name") or "")
+            raw_data = fn_resp.get("response")
+            if isinstance(raw_data, dict) and "result" in raw_data and isinstance(raw_data["result"], dict):
+                raw_data = raw_data["result"]
+            if fn_name in _TOOL_SCHEMA_MAP and isinstance(raw_data, dict):
+                agent_name, schema_name = _TOOL_SCHEMA_MAP[fn_name]
+                dedup_key = f"{fn_name}:{len(str(raw_data))}"
+                if dedup_key not in seen_keys:
+                    seen_keys.add(dedup_key)
+                    outputs.append(
+                        AgentSchemaOutput(
+                            agent_name=agent_name,
+                            tool_name=fn_name,
+                            schema_name=schema_name,
+                            data=raw_data,
+                        )
+                    )
+        for v in obj.values():
+            _extract_agent_outputs_recursive(v, outputs, seen_keys)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_agent_outputs_recursive(item, outputs, seen_keys)
+
+
+def _synthesize_fallback_actions(
+    county: str,
+    tools_called: List[str],
+    agent_outputs: List[AgentSchemaOutput],
+    grounding_chunks: List[MapsGroundingChunk],
+    actions_by_id: Dict[str, RecommendedAction],
+) -> None:
+    """Ensure every specialist agent turn has interactive RecommendedAction items (Approve/Reject/Select)
+    even if a remote Cloud Run container or live tool returns raw tool dicts without `recommended_actions`."""
+    if actions_by_id:
+        return
+
+    county_clean = (county or "Lee").strip()
+    for out in agent_outputs:
+        data = out.data or {}
+        t_name = out.tool_name
+
+        # Q1: Prioritization Agent (rank_priority_tracts / get_vulnerable_tracts)
+        if t_name in ("rank_priority_tracts", "get_vulnerable_tracts"):
+            tracts = data.get("tracts") or []
+            for idx, tr in enumerate(tracts[:3]):
+                gid = str(tr.get("geo_id") or f"tract_{idx+1}")
+                hh_nv = int(tr.get("hh_no_vehicle") or tr.get("households_no_vehicle") or 0)
+                pop = int(tr.get("total_pop") or 0)
+                walk_n = int(tr.get("n_within_walk") or 0)
+                near_mi = tr.get("nearest_shelter_miles") or tr.get("nearest_any_shelter_km")
+                loc = LocationInfo(
+                    lat=tr.get("lat"),
+                    lon=tr.get("lon"),
+                    label=f"Census Tract {gid}",
+                    county=county_clean,
+                    tract_geoid=gid,
+                )
+                act_id = f"q1_bus_pickup_{gid}"
+                actions_by_id[act_id] = RecommendedAction(
+                    action_id=act_id,
+                    action_type=ActionType.ORGANIZE_BUS_PICKUP,
+                    interaction_mode=InteractionMode.APPROVAL_REQUIRED,
+                    severity=ActionSeverity.CRITICAL if idx == 0 else ActionSeverity.HIGH,
+                    title=f"Stage transit pickup for Tract {gid} ({hh_nv:,} no-vehicle households)",
+                    summary=f"Rank #{idx+1} priority tract in {county_clean} County with {hh_nv:,} vehicle-less households and {walk_n} walkable shelters <=1 mi.",
+                    rationale="Households without personal vehicles beyond walking distance of a shelter require pre-staged municipal bus pickup points.",
+                    source_agent="prioritization_agent",
+                    source_tool=t_name,
+                    location=loc,
+                    affected_households=hh_nv,
+                    affected_residents=pop,
+                    attention_items=[
+                        AttentionItem(label="No-Vehicle Households", value=f"{hh_nv:,} HH", badge="📊 ACS", is_warning=True),
+                        AttentionItem(label="Nearest Shelter Distance", value=f"{near_mi} mi" if near_mi is not None else "Unknown", badge="🕰️ FEMA", is_warning=(walk_n == 0)),
+                    ],
+                    requires_approval=True,
+                    approval=ApprovalDetails(
+                        confirm_label="Approve Bus Staging",
+                        reject_label="Defer",
+                        proposed_change=f"Assign transit evacuation staging for Tract {gid} ({hh_nv:,} households)",
+                        target_entity_type="tract",
+                        target_entity_id=gid,
+                        payload={"tract_geoid": gid, "hh_no_vehicle": hh_nv},
+                        irreversible_or_high_impact=True,
+                    ),
+                )
+
+        # Q2: Destination Agent (plan_evacuation_destinations)
+        elif t_name == "plan_evacuation_destinations":
+            plans = data.get("tract_plans") or []
+            for p in plans[:3]:
+                gid = str(p.get("tract_geoid") or "")
+                cands = (p.get("walk_tier_shelters_1mi") or []) + (p.get("short_drive_shelters_5mi") or [])
+                if not gid or not cands:
+                    continue
+                opts: List[ActionOption] = []
+                for c_idx, c in enumerate(cands[:3]):
+                    sid = int(c.get("shelter_id") or (c_idx + 1))
+                    sname = str(c.get("shelter_name") or f"Shelter #{sid}")
+                    cap = int(c.get("evacuation_capacity") or 0)
+                    wc = str(c.get("wheelchair_accessible") or "UNRECORDED")
+                    dist_mi = c.get("live_driving_distance_miles") or c.get("straight_line_miles")
+                    dur_min = c.get("live_driving_duration_minutes")
+                    opts.append(
+                        ActionOption(
+                            option_id=f"shelter_{sid}",
+                            label=f"{sname} ({c.get('city') or county_clean})",
+                            description=f"{dist_mi} mi" + (f" ({dur_min} min drive)" if dur_min else "") + f" · Cap {cap:,} · ADA: {wc}",
+                            recommended=(c_idx == 0),
+                            location=LocationInfo(
+                                lat=c.get("latitude"),
+                                lon=c.get("longitude"),
+                                label=sname,
+                                address=c.get("address"),
+                                city=c.get("city"),
+                                county=county_clean,
+                                shelter_id=sid,
+                            ),
+                            metrics={"capacity": cap, "wheelchair": wc, "distance_miles": dist_mi},
+                            warnings=(["Wheelchair access UNRECORDED"] if wc == "UNRECORDED" else []),
+                        )
+                    )
+                act_id = f"q2_select_dest_{gid}"
+                actions_by_id[act_id] = RecommendedAction(
+                    action_id=act_id,
+                    action_type=ActionType.SELECT_TRACT_DESTINATION,
+                    interaction_mode=InteractionMode.SELECT_BETWEEN_OPTIONS,
+                    severity=ActionSeverity.HIGH,
+                    title=f"Select primary receiving shelter for Tract {gid}",
+                    summary=f"Choose between {len(opts)} candidate shelters within reach of Tract {gid}.",
+                    rationale="Assigning a primary receiving shelter balances evacuation capacity and ADA accessibility.",
+                    source_agent="destination_agent",
+                    source_tool=t_name,
+                    location=LocationInfo(lat=p.get("tract_lat"), lon=p.get("tract_lon"), label=f"Tract {gid}", county=county_clean, tract_geoid=gid),
+                    requires_selection=True,
+                    requires_approval=True,
+                    options=opts,
+                    selected_option_id=opts[0].option_id,
+                    approval=ApprovalDetails(
+                        confirm_label="Approve Selected Destination",
+                        reject_label="Reject Assignment",
+                        proposed_change=f"Lock primary receiving shelter for Tract {gid}",
+                        target_entity_type="tract",
+                        target_entity_id=gid,
+                    ),
+                )
+
+        # Q3: Verification Agent (verify_shelters_live / data_quality_report)
+        elif t_name in ("verify_shelters_live", "data_quality_report"):
+            findings = data.get("verified_shelters") or []
+            for f in findings[:4]:
+                sname = str(f.get("fema_shelter_name") or "Candidate Shelter")
+                vstat = str(f.get("verified_status") or "OPEN")
+                act_id = f"q3_verify_{re.sub(r'[^a-zA-Z0-9]+', '_', sname.lower())[:28]}"
+                actions_by_id[act_id] = RecommendedAction(
+                    action_id=act_id,
+                    action_type=ActionType.DROP_CLOSED_SHELTER if vstat == "CLOSED" else ActionType.UPDATE_SHELTER_REGISTRY_NAME,
+                    interaction_mode=InteractionMode.APPROVAL_REQUIRED,
+                    severity=ActionSeverity.CRITICAL if vstat == "CLOSED" else ActionSeverity.MEDIUM,
+                    title=f"Reconcile FEMA vs Google Maps record for {sname} ({vstat})",
+                    summary=str(f.get("live_finding") or f"Google Maps verification status: {vstat}"),
+                    rationale="FEMA's historical shelter table must be reconciled with live Google Maps place verification prior to storm season.",
+                    source_agent="verification_agent",
+                    source_tool=t_name,
+                    location=LocationInfo(label=sname, address=f.get("address"), city=f.get("city"), county=county_clean),
+                    attention_items=[
+                        AttentionItem(
+                            label="FEMA Wheelchair / Capacity",
+                            value=f"ADA: {f.get('fema_wheelchair_accessible', 'UNRECORDED')} · Cap: {f.get('fema_evacuation_capacity', 0)}",
+                            badge="🕰️ FEMA",
+                            is_warning=f.get("fema_wheelchair_accessible") == "UNRECORDED",
+                        ),
+                        AttentionItem(
+                            label="Live Google Maps Status",
+                            value=vstat,
+                            badge="🟢 Google Maps",
+                            is_warning=(vstat != "OPEN"),
+                            maps_title=f.get("maps_place_title"),
+                            maps_uri=f.get("maps_place_uri"),
+                        ),
+                    ],
+                    requires_approval=True,
+                    approval=ApprovalDetails(
+                        confirm_label="Approve Registry Update",
+                        reject_label="Keep Existing Record",
+                        proposed_change=f"Update status of {sname} to {vstat} in county operational plan",
+                        target_entity_type="shelter",
+                        target_entity_id=sname,
+                    ),
+                )
+
+        # Coordinator: find_shelters / analyze_shelter_readiness / county_gap_report
+        elif t_name in ("find_shelters", "analyze_shelter_readiness", "county_gap_report", "get_power_and_medical_gaps"):
+            shelters = data.get("shelters") or data.get("candidate_shelters") or []
+            if shelters:
+                opts = []
+                for s_idx, s in enumerate(shelters[:4]):
+                    sid = s.get("shelter_id") or (s_idx + 1)
+                    sname = str(s.get("shelter_name") or f"Shelter #{sid}")
+                    wc = str(s.get("wheelchair_accessible") or s.get("wheelchair_status") or "UNRECORDED")
+                    cap = int(s.get("evacuation_capacity") or 0)
+                    opts.append(
+                        ActionOption(
+                            option_id=f"audit_shelter_{sid}",
+                            label=f"{sname} ({s.get('city') or county_clean})",
+                            description=f"Evac Cap: {cap:,} · Wheelchair: {wc} · Generator: {s.get('generator_onsite') or s.get('generator_status') or 'UNRECORDED'}",
+                            recommended=(s_idx == 0),
+                            location=LocationInfo(
+                                lat=s.get("latitude"),
+                                lon=s.get("longitude"),
+                                label=sname,
+                                address=s.get("address") or s.get("address_1"),
+                                city=s.get("city"),
+                                county=county_clean,
+                                shelter_id=int(sid) if str(sid).isdigit() else None,
+                            ),
+                            metrics={"evacuation_capacity": cap, "wheelchair": wc},
+                        )
+                    )
+                act_id = f"coord_shelter_select_{county_clean.lower()}"
+                actions_by_id[act_id] = RecommendedAction(
+                    action_id=act_id,
+                    action_type=ActionType.AUDIT_UNASSESSED_NEARBY_SHELTERS,
+                    interaction_mode=InteractionMode.SELECT_BETWEEN_OPTIONS,
+                    severity=ActionSeverity.HIGH,
+                    title=f"Select priority shelter in {county_clean} County for operator accessibility & generator audit",
+                    summary=f"{len(shelters)} candidate shelters returned; select which facility to prioritize for pre-season verification.",
+                    rationale="Closing UNRECORDED wheelchair and generator fields on high-capacity shelters expands verified accessible capacity.",
+                    source_agent="evac_readiness_coordinator",
+                    source_tool=t_name,
+                    location=opts[0].location,
+                    requires_selection=True,
+                    requires_approval=True,
+                    options=opts,
+                    selected_option_id=opts[0].option_id,
+                    approval=ApprovalDetails(
+                        confirm_label="Approve Shelter Audit Assignment",
+                        reject_label="Defer Audit",
+                        proposed_change=f"Dispatch operator accessibility & generator check in {county_clean} County",
+                        target_entity_type="shelter",
+                        target_entity_id=opts[0].option_id,
+                    ),
+                )
+
+
+@app.post("/api/chat/action-decision", response_model=ActionDecisionResponse)
+async def record_action_decision(req: ActionDecisionRequest) -> ActionDecisionResponse:
+    """Record an emergency manager's Approve, Reject, or Select-Between-Options decision from the Chat Widget."""
+    session_id = req.session_id or "default-session"
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    sess_bucket = _ACTION_DECISIONS.setdefault(session_id, {})
+
+    action_title = (req.action or {}).get("title") or req.action_id
+    proposed_change = ((req.action or {}).get("approval") or {}).get("proposed_change") or action_title
+
+    if req.decision == "APPROVED":
+        opt_suffix = f" with option '{req.selected_option_label or req.selected_option_id}'" if req.selected_option_id else ""
+        applied_summary = f"Approved: {proposed_change}{opt_suffix}."
+        follow_up = (
+            f"I have APPROVED action `{req.action_id}` ({action_title}){opt_suffix} for {req.county or 'Lee'} County."
+            + (f" Note: {req.note}." if req.note else "")
+            + " Please update the readiness plan and advise the next step."
+        )
+    elif req.decision == "REJECTED":
+        applied_summary = f"Rejected / Deferred: {action_title}."
+        follow_up = (
+            f"I have REJECTED / DEFERRED action `{req.action_id}` ({action_title}) for {req.county or 'Lee'} County."
+            + (f" Reason: {req.note}." if req.note else "")
+            + " Please suggest an alternative mitigation or next priority."
+        )
+    else:
+        opt_label = req.selected_option_label or req.selected_option_id or "selected option"
+        applied_summary = f"Selected option '{opt_label}' for {action_title}."
+        follow_up = (
+            f"For action `{req.action_id}` ({action_title}) in {req.county or 'Lee'} County, "
+            f"I selected option `{opt_label}`."
+            + (f" Note: {req.note}." if req.note else "")
+            + " Please proceed with this selected option."
+        )
+
+    record = {
+        "action_id": req.action_id,
+        "decision": req.decision,
+        "selected_option_id": req.selected_option_id,
+        "selected_option_label": req.selected_option_label,
+        "decided_at": now_iso,
+        "note": req.note,
+        "county": req.county or "Lee",
+        "applied_summary": applied_summary,
+        "follow_up_prompt": follow_up,
+    }
+    sess_bucket[req.action_id] = record
+
+    return ActionDecisionResponse(
+        status="recorded",
+        action_id=req.action_id,
+        decision=req.decision,
+        selected_option_id=req.selected_option_id,
+        selected_option_label=req.selected_option_label,
+        decided_at=now_iso,
+        note=req.note,
+        applied_summary=applied_summary,
+        follow_up_prompt=follow_up,
+    )
+
+
+@app.get("/api/chat/action-decisions")
+async def list_action_decisions(session_id: str = Query("default-session")) -> Dict[str, Any]:
+    """Return all recorded action decisions for a chat session."""
+    return {
+        "session_id": session_id,
+        "decisions": _ACTION_DECISIONS.get(session_id, {}),
+    }
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     """Forward chat turns to the deployed Cloud Run ADK service (`evac_agent`) and extract tools + Maps sources."""
@@ -380,6 +734,8 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     grounding_chunks: List[MapsGroundingChunk] = []
     seen_uris: set = set()
     actions_by_id: Dict[str, RecommendedAction] = {}
+    agent_outputs: List[AgentSchemaOutput] = []
+    seen_output_keys: set = set()
 
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
@@ -418,6 +774,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
 
                 _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
                 _extract_recommended_actions_recursive(ev, actions_by_id)
+                _extract_agent_outputs_recursive(ev, agent_outputs, seen_output_keys)
 
     except HTTPException:
         raise
@@ -427,6 +784,9 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     elapsed = round(time.time() - t0, 1)
     reply_text = texts[-1].strip() if texts else "No response generated."
     _extract_maps_sources_from_text(reply_text, seen_uris, grounding_chunks)
+    _synthesize_fallback_actions(
+        req.county or "Lee", tools_called, agent_outputs, grounding_chunks, actions_by_id
+    )
 
     return ChatResponse(
         reply=reply_text,
@@ -437,6 +797,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
         recommended_actions=list(actions_by_id.values()),
+        agent_outputs=agent_outputs,
     )
 
 
@@ -522,6 +883,8 @@ async def chat_stream_endpoint(req: ChatRequest):
         grounding_chunks: List[MapsGroundingChunk] = []
         seen_uris: set = set()
         actions_by_id: Dict[str, RecommendedAction] = {}
+        agent_outputs: List[AgentSchemaOutput] = []
+        seen_output_keys: set = set()
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
                 await client.post(
@@ -552,8 +915,12 @@ async def chat_stream_endpoint(req: ChatRequest):
                                 texts.append(part["text"])
                         _extract_maps_sources_recursive(ev, seen_uris, grounding_chunks)
                         _extract_recommended_actions_recursive(ev, actions_by_id)
+                        _extract_agent_outputs_recursive(ev, agent_outputs, seen_output_keys)
             reply_text = texts[-1].strip() if texts else "I couldn't produce an answer that time. Please try again."
             _extract_maps_sources_from_text(reply_text, seen_uris, grounding_chunks)
+            _synthesize_fallback_actions(
+                req.county or "Lee", tools_called, agent_outputs, grounding_chunks, actions_by_id
+            )
             yield _sse({
                 "type": "final",
                 "reply": reply_text,
@@ -561,6 +928,7 @@ async def chat_stream_endpoint(req: ChatRequest):
                 "elapsed_seconds": round(time.time() - t0, 1),
                 "grounding_chunks": [c.model_dump() for c in grounding_chunks],
                 "recommended_actions": [a.model_dump() for a in actions_by_id.values()],
+                "agent_outputs": [o.model_dump() for o in agent_outputs],
             })
         except Exception as exc:  # surface any failure to the UI instead of hanging
             yield _sse({"type": "error", "message": str(exc)[:300]})
@@ -670,6 +1038,8 @@ async def _execute_live_tool(
     turn_tools: List[str],
     turn_grounding: List[MapsGroundingChunk],
     seen_uris: set,
+    turn_actions: Dict[str, RecommendedAction],
+    turn_outputs: List[AgentSchemaOutput],
 ) -> Dict[str, Any]:
     """Execute a tool requested during a Gemini Live voice session and stream step progress to the UI."""
     county_arg = str(args.get("county_name_or_fips") or args.get("county") or default_county or "Lee")
@@ -695,18 +1065,45 @@ async def _execute_live_tool(
                 max_reachable_km=float(args.get("max_reachable_km", 10.0)),
                 limit=int(args.get("limit", 10)),
             )
+            if isinstance(res, dict) and res.get("status") == "success":
+                out = AgentSchemaOutput(
+                    agent_name="prioritization_agent",
+                    tool_name="get_vulnerable_tracts",
+                    schema_name="RankPriorityTractsOutput",
+                    data=res,
+                )
+                turn_outputs.append(out)
+                _synthesize_fallback_actions(county_arg, turn_tools, [out], turn_grounding, turn_actions)
         elif name == "analyze_shelter_readiness":
             res = await asyncio.to_thread(
                 analyze_shelter_readiness,
                 county_name_or_fips=county_arg,
                 limit=int(args.get("limit", 15)),
             )
+            if isinstance(res, dict) and res.get("status") == "success":
+                out = AgentSchemaOutput(
+                    agent_name="evac_readiness_coordinator",
+                    tool_name="analyze_shelter_readiness",
+                    schema_name="FindSheltersOutput",
+                    data=res,
+                )
+                turn_outputs.append(out)
+                _synthesize_fallback_actions(county_arg, turn_tools, [out], turn_grounding, turn_actions)
         elif name == "get_power_and_medical_gaps":
             res = await asyncio.to_thread(
                 get_power_and_medical_gaps,
                 county_name_or_fips=county_arg,
                 limit=int(args.get("limit", 10)),
             )
+            if isinstance(res, dict) and res.get("status") == "success":
+                out = AgentSchemaOutput(
+                    agent_name="evac_readiness_coordinator",
+                    tool_name="get_power_and_medical_gaps",
+                    schema_name="CountyGapReportOutput",
+                    data=res,
+                )
+                turn_outputs.append(out)
+                _synthesize_fallback_actions(county_arg, turn_tools, [out], turn_grounding, turn_actions)
         elif name == "ask_evacuation_specialist":
             question = str(args.get("question") or f"Check evacuation readiness for {county_arg} County")
             chat_res = await chat_endpoint(
@@ -724,6 +1121,10 @@ async def _execute_live_tool(
                 if g.uri not in seen_uris:
                     seen_uris.add(g.uri)
                     turn_grounding.append(g)
+            for act in chat_res.recommended_actions:
+                turn_actions[act.action_id] = act
+            for out in chat_res.agent_outputs:
+                turn_outputs.append(out)
             res = {
                 "status": "success",
                 "specialist_report": chat_res.reply,
@@ -832,6 +1233,8 @@ async def gemini_live_websocket(
     turn_tools: List[str] = []
     turn_grounding: List[MapsGroundingChunk] = []
     seen_uris: set = set()
+    turn_actions: Dict[str, RecommendedAction] = {}
+    turn_outputs: List[AgentSchemaOutput] = []
     turn_started_at: Optional[float] = None
 
     async def receive_from_client():
@@ -869,7 +1272,7 @@ async def gemini_live_websocket(
             pass
 
     async def receive_from_gemini():
-        nonlocal turn_tools, turn_grounding, seen_uris, turn_started_at
+        nonlocal turn_tools, turn_grounding, seen_uris, turn_actions, turn_outputs, turn_started_at
         try:
             while True:
                 async for response in live_session.receive():
@@ -936,11 +1339,15 @@ async def gemini_live_websocket(
                                     "tools_called": list(turn_tools),
                                     "elapsed_seconds": elapsed,
                                     "grounding_chunks": [c.model_dump() for c in turn_grounding],
+                                    "recommended_actions": [a.model_dump() for a in turn_actions.values()],
+                                    "agent_outputs": [o.model_dump() for o in turn_outputs],
                                 }
                             )
                             turn_tools = []
                             turn_grounding = []
                             seen_uris = set()
+                            turn_actions = {}
+                            turn_outputs = []
                             turn_started_at = None
 
                     tool_call = getattr(response, "tool_call", None)
@@ -960,6 +1367,8 @@ async def gemini_live_websocket(
                                 turn_tools=turn_tools,
                                 turn_grounding=turn_grounding,
                                 seen_uris=seen_uris,
+                                turn_actions=turn_actions,
+                                turn_outputs=turn_outputs,
                             )
                             fn_responses.append(
                                 types.FunctionResponse(
