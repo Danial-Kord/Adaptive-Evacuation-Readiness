@@ -1,6 +1,7 @@
 """Root ADK Agent definition combining Gemini 3.x, Google Maps Grounding, and BigQuery tools."""
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.tools import google_maps_grounding
@@ -12,7 +13,9 @@ from .tools import (
     get_vulnerable_tracts,
 )
 
-load_dotenv()
+_PACKAGE_DIR = Path(__file__).resolve().parent
+load_dotenv(_PACKAGE_DIR.parent / ".env")
+load_dotenv(_PACKAGE_DIR.parent.parent / ".env")
 
 # Gemini 3.x supports built-in `google_maps_grounding` alongside custom function tools in a single agent.
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")

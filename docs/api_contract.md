@@ -10,6 +10,8 @@
 |--------|------|-------------|
 | `GET` | `/health` | Health check for Cloud Run readiness probes |
 | `POST` | `/api/chat` | Send an emergency planner prompt and receive an ADK agent response + structured data + Google Maps grounding metadata |
+| `GET` | `/api/admin/tables` | List all 5 BigQuery tables in `evacuation_readiness` with row counts, byte sizes, and column schemas |
+| `GET` | `/api/admin/tables/{table_name}/rows` | Query paginated rows from a BigQuery table (`shelters`, `vulnerability_tracts`, `hazard_tracts`, `care_facilities`, `power_dependent_counties`) with `search`, `county`, and `quick_filter` parameters |
 
 ---
 
