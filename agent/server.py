@@ -1,5 +1,7 @@
 """FastAPI server wrapping the ADK Runner, Google Maps grounding metadata, and BigQuery Admin Explorer."""
 
+import asyncio
+import base64
 import json
 import math
 import os
@@ -9,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -20,7 +22,13 @@ from google.cloud import bigquery
 from google.genai import types
 
 from evacuation_agent.agent import root_agent
+from evacuation_agent.prompts import SYSTEM_INSTRUCTION
 from evacuation_agent.schemas import ChatRequest, ChatResponse, MapsGroundingChunk
+from evacuation_agent.tools import (
+    analyze_shelter_readiness,
+    get_power_and_medical_gaps,
+    get_vulnerable_tracts,
+)
 
 # Load .env from either agent/.env or the repository root .env
 _AGENT_DIR = Path(__file__).resolve().parent
@@ -516,6 +524,435 @@ async def chat_stream_endpoint(req: ChatRequest):
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+_LIVE_TOOL_DECLARATIONS = [
+    types.FunctionDeclaration(
+        name="get_vulnerable_tracts",
+        description=(
+            "Rank census tracts in a county by self-evacuation vulnerability (no-vehicle households, "
+            "65+, disability, mobility, mobile homes) and straight-line distance to nearest shelters."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "county_name_or_fips": types.Schema(
+                    type="STRING",
+                    description="County name (e.g. 'Lee', 'Miami-Dade', 'Pinellas') or 5-digit county FIPS.",
+                ),
+                "max_reachable_km": types.Schema(
+                    type="NUMBER",
+                    description="Distance threshold in km (default 10.0).",
+                ),
+                "limit": types.Schema(
+                    type="INTEGER",
+                    description="Max number of priority tracts to return (default 10).",
+                ),
+            },
+            required=["county_name_or_fips"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="analyze_shelter_readiness",
+        description=(
+            "Analyze shelter capacity, wheelchair accessibility (Recorded YES vs Recorded NO vs UNRECORDED), "
+            "generator status, and storm surge risk in a county."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "county_name_or_fips": types.Schema(
+                    type="STRING",
+                    description="County name (e.g. 'Lee', 'Miami-Dade', 'Pinellas') or 5-digit county FIPS.",
+                ),
+                "limit": types.Schema(
+                    type="INTEGER",
+                    description="Max candidate shelters to return (default 15).",
+                ),
+            },
+            required=["county_name_or_fips"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_power_and_medical_gaps",
+        description=(
+            "Retrieve county-level electricity-dependent Medicare beneficiaries (HHS emPOWER), "
+            "nursing homes (CMS care_facilities), and medical shelters."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "county_name_or_fips": types.Schema(
+                    type="STRING",
+                    description="County name (e.g. 'Lee', 'Miami-Dade', 'Pinellas') or 5-digit county FIPS.",
+                ),
+                "limit": types.Schema(
+                    type="INTEGER",
+                    description="Max nursing home care facilities to return (default 10).",
+                ),
+            },
+            required=["county_name_or_fips"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="ask_evacuation_specialist",
+        description=(
+            "Run a deep multi-agent evacuation query or live Google Maps shelter verification and drive-time "
+            "routing check for a specific question."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "question": types.Schema(
+                    type="STRING",
+                    description="The specific evacuation, routing, equity audit, or live Google Maps shelter verification question.",
+                ),
+                "county": types.Schema(
+                    type="STRING",
+                    description="County name (e.g. 'Lee').",
+                ),
+            },
+            required=["question"],
+        ),
+    ),
+]
+
+
+async def _execute_live_tool(
+    name: str,
+    args: Dict[str, Any],
+    default_county: str,
+    session_id: str,
+    websocket: WebSocket,
+    turn_tools: List[str],
+    turn_grounding: List[MapsGroundingChunk],
+    seen_uris: set,
+) -> Dict[str, Any]:
+    """Execute a tool requested during a Gemini Live voice session and stream step progress to the UI."""
+    county_arg = str(args.get("county_name_or_fips") or args.get("county") or default_county or "Lee")
+    step_name = name
+    if name == "get_vulnerable_tracts":
+        step_name = "prioritization_agent"
+    elif name == "analyze_shelter_readiness":
+        step_name = "find_shelters"
+    elif name == "get_power_and_medical_gaps":
+        step_name = "county_gap_report"
+    elif name == "ask_evacuation_specialist":
+        step_name = "verification_agent"
+
+    if step_name not in turn_tools:
+        turn_tools.append(step_name)
+    await websocket.send_json({"type": "step", "tool": step_name})
+
+    try:
+        if name == "get_vulnerable_tracts":
+            res = await asyncio.to_thread(
+                get_vulnerable_tracts,
+                county_name_or_fips=county_arg,
+                max_reachable_km=float(args.get("max_reachable_km", 10.0)),
+                limit=int(args.get("limit", 10)),
+            )
+        elif name == "analyze_shelter_readiness":
+            res = await asyncio.to_thread(
+                analyze_shelter_readiness,
+                county_name_or_fips=county_arg,
+                limit=int(args.get("limit", 15)),
+            )
+        elif name == "get_power_and_medical_gaps":
+            res = await asyncio.to_thread(
+                get_power_and_medical_gaps,
+                county_name_or_fips=county_arg,
+                limit=int(args.get("limit", 10)),
+            )
+        elif name == "ask_evacuation_specialist":
+            question = str(args.get("question") or f"Check evacuation readiness for {county_arg} County")
+            chat_res = await chat_endpoint(
+                ChatRequest(
+                    message=question,
+                    county=county_arg,
+                    state="FL",
+                    session_id=session_id,
+                )
+            )
+            for t in chat_res.tools_called:
+                if t not in turn_tools:
+                    turn_tools.append(t)
+            for g in chat_res.grounding_chunks:
+                if g.uri not in seen_uris:
+                    seen_uris.add(g.uri)
+                    turn_grounding.append(g)
+            res = {
+                "status": "success",
+                "specialist_report": chat_res.reply,
+                "tools_called": chat_res.tools_called,
+                "google_maps_sources": [g.model_dump() for g in chat_res.grounding_chunks],
+            }
+        else:
+            res = {"status": "error", "error": f"Unknown tool: {name}"}
+    except Exception as exc:
+        res = {"status": "error", "error": str(exc)[:300]}
+    finally:
+        await websocket.send_json({"type": "step_done", "tool": step_name})
+
+    return res
+
+
+@app.websocket("/api/live")
+async def gemini_live_websocket(
+    websocket: WebSocket,
+    county: str = Query("Lee"),
+    state: str = Query("FL"),
+    session_id: str = Query("live-session"),
+):
+    """Bidirectional Gemini Live API voice talk endpoint (16kHz PCM in, 24kHz PCM + transcripts + tools out)."""
+    await websocket.accept()
+
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("BQ_PROJECT") or ""
+    live_location = os.environ.get("GEMINI_LIVE_LOCATION", "us-central1")
+    candidate_models = [
+        os.environ.get("GEMINI_LIVE_MODEL", "gemini-2.0-flash-live-preview-04-09"),
+        "gemini-live-2.5-flash-preview-native-audio",
+        "gemini-2.0-flash-exp",
+    ]
+    voice_name = os.environ.get("GEMINI_LIVE_VOICE", "Aoede")
+
+    live_instruction = (
+        f"{SYSTEM_INSTRUCTION}\n\n"
+        f"### VOICE CONVERSATION MODE\n"
+        f"- You are speaking live with the County Emergency Manager for **{county} County, {state}**.\n"
+        f"- Keep your spoken responses clear, natural, and concise (2 to 4 short paragraphs or key bullet points) "
+        f"while citing exact tract numbers, shelter names, and counts from your tools.\n"
+        f"- Always use `get_vulnerable_tracts`, `analyze_shelter_readiness`, `get_power_and_medical_gaps`, or "
+        f"`ask_evacuation_specialist` to ground your answers in real federal records and live Google Maps checks.\n"
+    )
+
+    live_config = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+            )
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction=types.Content(parts=[types.Part.from_text(text=live_instruction)]),
+        tools=[types.Tool(function_declarations=_LIVE_TOOL_DECLARATIONS)],
+    )
+
+    try:
+        genai_client = genai.Client(
+            vertexai=True,
+            project=project if project and project != "your-gcp-project-id" else None,
+            location=live_location,
+        )
+    except Exception as exc:
+        await websocket.send_json(
+            {"type": "error", "message": f"Failed to initialize Gemini Live client: {exc}"}
+        )
+        await websocket.close()
+        return
+
+    # Try connecting with candidate live models
+    live_ctx = None
+    connected_model = None
+    last_err: Optional[Exception] = None
+    for model_id in dict.fromkeys(candidate_models):
+        try:
+            ctx = genai_client.aio.live.connect(model=model_id, config=live_config)
+            live_session = await ctx.__aenter__()
+            live_ctx = ctx
+            connected_model = model_id
+            break
+        except Exception as exc:
+            last_err = exc
+            continue
+
+    if live_ctx is None or connected_model is None:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": f"Gemini Live session unavailable ({last_err}). Falling back to browser voice bridge.",
+            }
+        )
+        await websocket.close()
+        return
+
+    await websocket.send_json(
+        {
+            "type": "ready",
+            "model": connected_model,
+            "county": county,
+            "state": state,
+        }
+    )
+
+    turn_tools: List[str] = []
+    turn_grounding: List[MapsGroundingChunk] = []
+    seen_uris: set = set()
+    turn_started_at: Optional[float] = None
+
+    async def receive_from_client():
+        nonlocal turn_started_at
+        try:
+            while True:
+                raw_msg = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw_msg)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = msg.get("type")
+                if msg_type == "audio":
+                    b64_data = msg.get("data")
+                    if b64_data:
+                        pcm_bytes = base64.b64decode(b64_data)
+                        await live_session.send(
+                            input=types.LiveClientRealtimeInput(
+                                media_chunks=[
+                                    types.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+                                ]
+                            )
+                        )
+                elif msg_type == "text":
+                    text_val = (msg.get("text") or "").strip()
+                    if text_val:
+                        turn_started_at = time.time()
+                        await live_session.send(input=text_val, end_of_turn=True)
+                elif msg_type == "end_audio":
+                    turn_started_at = time.time()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    async def receive_from_gemini():
+        nonlocal turn_tools, turn_grounding, seen_uris, turn_started_at
+        try:
+            while True:
+                async for response in live_session.receive():
+                    sc = getattr(response, "server_content", None)
+                    if sc is not None:
+                        if getattr(sc, "interrupted", False):
+                            await websocket.send_json({"type": "interrupted"})
+
+                        in_tr = getattr(sc, "input_transcription", None)
+                        if in_tr and getattr(in_tr, "text", None):
+                            if turn_started_at is None:
+                                turn_started_at = time.time()
+                            await websocket.send_json(
+                                {
+                                    "type": "input_transcript",
+                                    "text": in_tr.text,
+                                    "finished": bool(getattr(in_tr, "finished", False)),
+                                }
+                            )
+
+                        out_tr = getattr(sc, "output_transcription", None)
+                        if out_tr and getattr(out_tr, "text", None):
+                            await websocket.send_json(
+                                {
+                                    "type": "output_transcript",
+                                    "text": out_tr.text,
+                                    "finished": bool(getattr(out_tr, "finished", False)),
+                                }
+                            )
+
+                        model_turn = getattr(sc, "model_turn", None)
+                        if model_turn and getattr(model_turn, "parts", None):
+                            for part in model_turn.parts:
+                                inline_data = getattr(part, "inline_data", None)
+                                if inline_data and getattr(inline_data, "data", None):
+                                    b64_audio = base64.b64encode(inline_data.data).decode("ascii")
+                                    await websocket.send_json(
+                                        {
+                                            "type": "audio",
+                                            "data": b64_audio,
+                                            "mime_type": getattr(inline_data, "mime_type", None)
+                                            or "audio/pcm;rate=24000",
+                                        }
+                                    )
+                                part_text = getattr(part, "text", None)
+                                if part_text and not getattr(part, "thought", False):
+                                    await websocket.send_json(
+                                        {
+                                            "type": "output_transcript",
+                                            "text": part_text,
+                                            "finished": False,
+                                        }
+                                    )
+
+                        if getattr(sc, "turn_complete", False):
+                            elapsed = (
+                                round(time.time() - turn_started_at, 1)
+                                if turn_started_at
+                                else None
+                            )
+                            await websocket.send_json(
+                                {
+                                    "type": "turn_complete",
+                                    "tools_called": list(turn_tools),
+                                    "elapsed_seconds": elapsed,
+                                    "grounding_chunks": [c.model_dump() for c in turn_grounding],
+                                }
+                            )
+                            turn_tools = []
+                            turn_grounding = []
+                            seen_uris = set()
+                            turn_started_at = None
+
+                    tool_call = getattr(response, "tool_call", None)
+                    if tool_call and getattr(tool_call, "function_calls", None):
+                        if turn_started_at is None:
+                            turn_started_at = time.time()
+                        fn_responses: List[types.FunctionResponse] = []
+                        for fc in tool_call.function_calls:
+                            fn_name = getattr(fc, "name", "") or ""
+                            fn_args = dict(getattr(fc, "args", {}) or {})
+                            res_dict = await _execute_live_tool(
+                                name=fn_name,
+                                args=fn_args,
+                                default_county=county,
+                                session_id=session_id,
+                                websocket=websocket,
+                                turn_tools=turn_tools,
+                                turn_grounding=turn_grounding,
+                                seen_uris=seen_uris,
+                            )
+                            fn_responses.append(
+                                types.FunctionResponse(
+                                    id=getattr(fc, "id", None),
+                                    name=fn_name,
+                                    response=res_dict,
+                                )
+                            )
+                        if fn_responses:
+                            await live_session.send(
+                                input=types.LiveClientToolResponse(
+                                    function_responses=fn_responses
+                                )
+                            )
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            try:
+                await websocket.send_json({"type": "error", "message": str(exc)[:250]})
+            except Exception:
+                pass
+
+    client_task = asyncio.create_task(receive_from_client())
+    gemini_task = asyncio.create_task(receive_from_gemini())
+    try:
+        await asyncio.wait(
+            [client_task, gemini_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        client_task.cancel()
+        gemini_task.cancel()
+        try:
+            await live_ctx.__aexit__(None, None, None)
+        except Exception:
+            pass
 
 
 def _flag_label(val: Any) -> str:

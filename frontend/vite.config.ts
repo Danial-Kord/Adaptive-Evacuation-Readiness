@@ -13,6 +13,7 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:8080",
         changeOrigin: true,
+        ws: true,
       },
       "/adk-cloud-run": {
         target: CLOUD_RUN_AGENT_URL,

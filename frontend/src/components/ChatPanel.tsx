@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AgentProgress, DEPLOYED_CLOUD_RUN_URL, streamAgentMessage } from "../services/agentApi";
+import { GeminiLiveSession, LiveTurnResult, LiveVoiceStatus } from "../services/geminiLive";
 import { MapsGroundingChunk } from "../types/brief";
 import { MapsAttribution } from "./MapsAttribution";
 
@@ -15,7 +16,11 @@ interface ChatPanelProps {
   stateCode?: string;
   county?: string;
   compact?: boolean;
+<<<<<<< HEAD
   suggestedQuestion?: {text: string; id: number; send?: boolean} | null;
+=======
+  suggestedQuestion?: { text: string; id: number } | null;
+>>>>>>> 78db330 (feat: add Gemini Live bidirectional voice talk support to planning assistant)
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -229,55 +234,196 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   suggestedQuestion,
 }) => {
   const bottom = useRef<HTMLDivElement>(null);
-  const questionInput = useRef<HTMLInputElement>(null);
+  const liveSessionRef = useRef<GeminiLiveSession | null>(null);
+
   const [sessionId, setSessionId] = useState<string>(
     () => `web-session-${crypto.randomUUID()}`
   );
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "agent",
-      text: `Hi! I can help you plan for **${county} County** before hurricane season. Ask me who would struggle to evacuate, where they could go, or whether a shelter record is still accurate. Pick a suggestion below or type your own question.`,
+      text: `Hi! I can help you plan for **${county} County** before hurricane season. Tap **Start Gemini Live Voice** below to talk with me about who would struggle to evacuate, where they could go, or whether a shelter record is still accurate — or pick a suggestion above.`,
     },
   ]);
-  const [input, setInput] = useState("");
+
   const [loading, setLoading] = useState(false);
   const [connection, setConnection] = useState<"ready" | "connected" | "error">("ready");
   const [expanded, setExpanded] = useState(false);
   const [steps, setSteps] = useState<{ tool: string; done: boolean }[]>([]);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [, setTick] = useState(0);
+
+  // Gemini Live Voice state
+  const [voiceStatus, setVoiceStatus] = useState<LiveVoiceStatus>("idle");
+  const [voiceDetail, setVoiceDetail] = useState<string>("");
+  const [micVolume, setMicVolume] = useState<number>(0);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [liveUserTranscript, setLiveUserTranscript] = useState<string>("");
+  const [liveAgentTranscript, setLiveAgentTranscript] = useState<string>("");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  const isVoiceActive =
+    voiceStatus === "connecting" ||
+    voiceStatus === "listening" ||
+    voiceStatus === "thinking" ||
+    voiceStatus === "speaking";
+
   useEffect(() => {
-    if (!loading) return;
+    if (!loading && voiceStatus !== "thinking") return;
     const id = window.setInterval(() => setTick((t) => t + 1), 1000);
     return () => window.clearInterval(id);
-  }, [loading]);
+  }, [loading, voiceStatus]);
+
   useEffect(() => {
-    if (suggestedQuestion?.send) {
-      handleSend(suggestedQuestion.text); // eslint-disable-line react-hooks/exhaustive-deps
+    liveSessionRef.current?.updateContext(county, stateCode, sessionId);
+  }, [county, stateCode, sessionId]);
+
+  useEffect(() => {
+    return () => {
+      liveSessionRef.current?.stop();
+      liveSessionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (suggestedQuestion?.text) {
+      void handleSend(suggestedQuestion.text);
+    }
+  }, [suggestedQuestion]);
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messages, loading, liveUserTranscript, liveAgentTranscript, voiceStatus]);
+
+  const createLiveSession = () => {
+    if (liveSessionRef.current) {
+      liveSessionRef.current.stop();
+    }
+    const session = new GeminiLiveSession(county, stateCode, sessionId, {
+      onStatusChange: (status, detail) => {
+        setVoiceStatus(status);
+        if (detail) setVoiceDetail(detail);
+        if (status === "thinking") {
+          setStartedAt((prev) => prev ?? Date.now());
+        } else if (status === "listening" || status === "idle") {
+          setStartedAt(null);
+        }
+        if (status === "listening" || status === "speaking") {
+          setConnection("connected");
+          setVoiceError(null);
+        }
+      },
+      onVolume: (level) => {
+        setMicVolume(level);
+      },
+      onInputTranscript: (text) => {
+        setLiveUserTranscript(text);
+      },
+      onOutputTranscript: (text) => {
+        setLiveAgentTranscript(text);
+      },
+      onStep: (p: AgentProgress) => {
+        setSteps((prev) => {
+          if (p.type === "step") {
+            if (prev.some((s) => s.tool === p.tool && !s.done)) return prev;
+            return [...prev, { tool: p.tool, done: false }];
+          }
+          return prev.map((s) => (s.tool === p.tool ? { ...s, done: true } : s));
+        });
+      },
+      onTurnComplete: (turn: LiveTurnResult) => {
+        setLiveUserTranscript("");
+        setLiveAgentTranscript("");
+        setSteps([]);
+        setStartedAt(null);
+        setConnection("connected");
+        setMessages((prev) => {
+          const next = [...prev];
+          if (turn.userText) {
+            next.push({ role: "user", text: turn.userText });
+          }
+          if (turn.agentText) {
+            next.push({
+              role: "agent",
+              text: turn.agentText,
+              tools_called: turn.tools_called,
+              elapsed_seconds: turn.elapsed_seconds,
+              grounding_chunks: turn.grounding_chunks,
+            });
+          }
+          return next;
+        });
+      },
+      onError: (msg) => {
+        setVoiceError(msg);
+      },
+    });
+    liveSessionRef.current = session;
+    return session;
+  };
+
+  const handleToggleVoice = async () => {
+    if (isVoiceActive) {
+      liveSessionRef.current?.stop();
+      setVoiceStatus("idle");
+      setVoiceDetail("");
+      setIsMuted(false);
+      setLiveUserTranscript("");
+      setLiveAgentTranscript("");
+      setSteps([]);
       return;
     }
-    setInput(suggestedQuestion?.text ?? "");
-    if (suggestedQuestion) questionInput.current?.focus();
-  }, [suggestedQuestion]);
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages, loading]);
+
+    setVoiceError(null);
+    setSteps([]);
+    const session = createLiveSession();
+    await session.start();
+  };
+
+  const handleToggleMute = () => {
+    if (!liveSessionRef.current) return;
+    const nextMuted = !isMuted;
+    liveSessionRef.current.setMuted(nextMuted);
+    setIsMuted(nextMuted);
+  };
+
+  const handleInterrupt = () => {
+    liveSessionRef.current?.stopAudioPlayback();
+    setVoiceStatus("listening");
+    setVoiceDetail("Listening — speak anytime");
+  };
 
   const handleNewSession = () => {
+    liveSessionRef.current?.stop();
+    setVoiceStatus("idle");
+    setVoiceDetail("");
+    setIsMuted(false);
+    setLiveUserTranscript("");
+    setLiveAgentTranscript("");
+    setSteps([]);
     const nextSession = `web-session-${crypto.randomUUID()}`;
     setSessionId(nextSession);
     setMessages([
       {
         role: "agent",
-        text: "New conversation started. What would you like to know?",
+        text: "New conversation started. Tap **Start Gemini Live Voice** below and tell me what you'd like to check.",
       },
     ]);
   };
 
-  const handleSend = async (promptText?: string) => {
-    const query = (promptText ?? input).trim();
+  const handleSend = async (promptText: string) => {
+    const query = promptText.trim();
     if (!query || loading) return;
 
+    // If Gemini Live voice session is active, send prompt directly into the live session
+    if (isVoiceActive && liveSessionRef.current) {
+      setSteps([]);
+      setStartedAt(Date.now());
+      await liveSessionRef.current.sendPrompt(query);
+      return;
+    }
+
     setMessages((prev) => [...prev, { role: "user", text: query }]);
-    if (!promptText) setInput("");
     setLoading(true);
     setSteps([]);
     setStartedAt(Date.now());
@@ -319,6 +465,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
+  const badgeLabel = isVoiceActive
+    ? voiceStatus === "speaking"
+      ? "◉ Speaking Live"
+      : voiceStatus === "thinking"
+      ? "◌ Checking Records…"
+      : voiceStatus === "connecting"
+      ? "◌ Connecting Live…"
+      : isMuted
+      ? "🔇 Mic Muted"
+      : "● Gemini Live Listening"
+    : loading
+    ? "Working…"
+    : connection === "error"
+    ? "Having trouble connecting"
+    : "● Gemini Live Ready";
+
   return (
     <div className={`chat-tab-container ${compact ? "compact-chat" : ""} ${expanded ? "chat-expanded" : ""}`}>
       {/* Top Status & Controls Card */}
@@ -327,12 +489,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div>
             <div className="admin-title-row">
               <h2>✧ Planning assistant</h2>
-              <span className={`connection-badge ${connection === "error" ? "preview" : "live"}`}>
-                {loading ? "Working…" : connection === "error" ? "Having trouble connecting" : "● Ready"}
+              <span className={`connection-badge ${connection === "error" ? "preview" : "live"} ${isVoiceActive ? "voice-live-badge" : ""}`}>
+                {badgeLabel}
               </span>
             </div>
             <p className="admin-subtitle">
-              {compact ? "Answers from federal records, checked live on Google Maps" : <>Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session: <code>{sessionId}</code></>}
+              {compact ? "Gemini Live voice assistant · Federal records + live Google Maps" : <>Endpoint: <code>{DEPLOYED_CLOUD_RUN_URL}</code> · Session: <code>{sessionId}</code></>}
             </p>
           </div>
 
@@ -363,7 +525,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
 
         <div className="chat-prompts-bar">
-          <span className="quick-filter-label">Try asking:</span>
+          <span className="quick-filter-label">Try asking by voice or tap:</span>
           {(compact ? [
             `Which neighborhoods in ${county} County should we prioritize, and why?`,
             `Where would people without a car in the top neighborhood go?`,
@@ -374,7 +536,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               type="button"
               className="prompt-chip"
               onClick={() => handleSend(q)}
-              disabled={loading}
+              disabled={loading || voiceStatus === "thinking"}
             >
               {q}
             </button>
@@ -427,21 +589,41 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           ))}
 
-          {loading && (
+          {/* Live real-time user speech transcription */}
+          {liveUserTranscript && (
+            <div className="chat-bubble user live-transcript-bubble">
+              <span className="live-transcript-tag">🎙️ Speaking live</span>
+              <div className="bubble-text">{liveUserTranscript}</div>
+            </div>
+          )}
+
+          {/* Live real-time Gemini Live spoken output transcription */}
+          {liveAgentTranscript && (
+            <div className="chat-bubble agent live-transcript-bubble">
+              <div className="agent-meta-bar">
+                <span className="tool-badge">🔊 Gemini Live Voice</span>
+              </div>
+              <div className="bubble-text">
+                {renderMarkdownBlocks(cleanAgentText(liveAgentTranscript), compact && !expanded)}
+              </div>
+            </div>
+          )}
+
+          {(loading || voiceStatus === "thinking" || steps.length > 0) && (
             <div className="chat-bubble agent progress-box" role="status">
               <div className="progress-title">
                 <span className="loading-ring small" /> Working on it…
                 <span className="progress-elapsed">{startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0}s</span>
               </div>
               <ul className="progress-steps">
-                <li className="done">✓ Understood your question</li>
+                <li className="done">✓ Heard your question</li>
                 {steps.map((s) => (
                   <li key={s.tool} className={s.done ? "done" : "active"}>
                     {s.done ? "✓" : <span className="step-dot" />} {friendlyStep(s.tool)}
                   </li>
                 ))}
                 {steps.length > 0 && steps.every((s) => s.done) && (
-                  <li className="active"><span className="step-dot" /> Writing up the answer</li>
+                  <li className="active"><span className="step-dot" /> Speaking the answer</li>
                 )}
               </ul>
               <p className="progress-note">
@@ -452,26 +634,120 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div ref={bottom} />
         </div>
 
-        <form
-          className="chat-input-row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSend();
-          }}
-        >
-          <input
-            ref={questionInput}
-            type="text"
-            aria-label="Question for the planning assistant"
-            placeholder={`Ask about ${county} County…`}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={loading}
-          />
-          <button type="submit" disabled={loading || !input.trim()}>
-            {loading ? "Working…" : "Send →"}
-          </button>
-        </form>
+        {/* Gemini Live Voice Talk Bar (replaces text input) */}
+        <div className={`gemini-live-voice-bar ${isVoiceActive ? `active-${voiceStatus}` : ""}`}>
+          {voiceError && (
+            <div className="voice-error-banner" role="alert">
+              <span>⚠️ {voiceError}</span>
+              <button type="button" onClick={() => setVoiceError(null)} aria-label="Dismiss error">✕</button>
+            </div>
+          )}
+
+          {!isVoiceActive ? (
+            <div className="voice-idle-controls">
+              <button
+                type="button"
+                className="voice-start-btn"
+                onClick={handleToggleVoice}
+                disabled={loading}
+                aria-label={`Start Gemini Live voice conversation for ${county} County`}
+              >
+                <span className="voice-mic-orb" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+                    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+                  </svg>
+                </span>
+                <span className="voice-start-text">
+                  <strong>Start Gemini Live Voice</strong>
+                  <small>Talk naturally about {county} County evacuation readiness</small>
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="voice-active-session">
+              <div className="voice-visualizer-row">
+                <div
+                  className={`voice-live-orb ${voiceStatus} ${isMuted ? "muted" : ""}`}
+                  style={
+                    {
+                      "--mic-scale": (1 + (isMuted ? 0 : micVolume) * 0.45).toFixed(2),
+                    } as React.CSSProperties
+                  }
+                >
+                  <div className="voice-wave-bars" aria-hidden="true">
+                    {[0.55, 0.9, 1.25, 0.95, 0.6].map((mult, idx) => {
+                      const heightPct =
+                        voiceStatus === "speaking"
+                          ? 65
+                          : isMuted
+                          ? 18
+                          : Math.max(20, Math.min(100, Math.round((0.18 + micVolume * mult) * 100)));
+                      return (
+                        <span
+                          key={idx}
+                          className={`wave-bar ${voiceStatus === "speaking" ? "speaking-anim" : ""}`}
+                          style={{
+                            height: `${heightPct}%`,
+                            animationDelay: `${idx * 0.12}s`,
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="voice-status-info">
+                  <div className="voice-status-headline">
+                    <span className={`voice-status-dot ${voiceStatus}`} />
+                    <strong>
+                      {isMuted
+                        ? "Microphone muted"
+                        : voiceStatus === "connecting"
+                        ? "Connecting to Gemini Live…"
+                        : voiceStatus === "speaking"
+                        ? "Gemini Live is speaking…"
+                        : voiceStatus === "thinking"
+                        ? "Checking county records & Google Maps…"
+                        : `Listening — ask about ${county} County`}
+                    </strong>
+                  </div>
+                  <p className="voice-status-sub">
+                    {voiceDetail || "Speak naturally; you can interrupt at any time."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="voice-action-buttons">
+                <button
+                  type="button"
+                  className={`voice-ctrl-btn ${isMuted ? "muted-active" : ""}`}
+                  onClick={handleToggleMute}
+                  aria-pressed={isMuted}
+                >
+                  {isMuted ? "🔇 Unmute Mic" : "🎙️ Mute Mic"}
+                </button>
+
+                {voiceStatus === "speaking" && (
+                  <button
+                    type="button"
+                    className="voice-ctrl-btn interrupt-btn"
+                    onClick={handleInterrupt}
+                  >
+                    ⏹ Interrupt
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="voice-ctrl-btn end-voice-btn"
+                  onClick={handleToggleVoice}
+                >
+                  ✕ End Live Voice
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
