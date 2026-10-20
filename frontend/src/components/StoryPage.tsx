@@ -169,31 +169,59 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
     setSweep((p) => p && { ...p, running: false, at: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) });
   };
 
-  const checklist = gaps ? [
+  const capOf = (x: Any) => Number(x.evacuation_capacity ?? 0);
+  const preLandfall = shelters.filter((x) => x.usage === "EVAC" || x.usage === "BOTH");
+  const statusTag = (v: string) => v === "UNRECORDED" ? <span className="tag unrec">never recorded</span> : v === "YES" ? <span className="tag yes">yes</span> : <span className="tag no">no</span>;
+  type Row = { name: React.ReactNode; meta: React.ReactNode };
+  const checklist: { title: string; why: string; ask: string; rows: Row[]; more?: number }[] = gaps ? [
     {
       title: `Set up pickup points for ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.households_no_vehicle)} households without a car`,
-      why: `They live in ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts)} evacuation-zone neighborhoods with no shelter within a 1-mile walk.`,
+      why: `They live in ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts)} evacuation-zone neighborhoods with no shelter within a 1-mile walk. Start with these:`,
       ask: `Which neighborhoods in ${county.name} County need pickup points for households without a car?`,
+      rows: (gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.worst ?? []).slice(0, 5).map((w: Any) => ({
+        name: <>{w.near_city ? `Near ${w.near_city}` : "Neighborhood"} <small className="muted">(tract {w.geo_id})</small></>,
+        meta: `${fmt(w.hh_no_vehicle)} households without a car · nearest shelter ${w.miles_nearest_shelter} mi`,
+      })),
+      more: Math.max(0, (gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.tracts ?? 0) - 5),
     },
     {
       title: `Ask ${fmt(quality?.unrecorded_counts?.wheelchair)} shelter operators whether a wheelchair user can get in on their own`,
-      why: "Nobody ever recorded it. Unknown is not the same as \"no\".",
+      why: "Nobody ever recorded it. Unknown is not the same as \"no\". Call the biggest evacuation shelters first:",
       ask: `Which ${county.name} County shelters should we ask about wheelchair access first?`,
+      rows: preLandfall.filter((x) => x.wheelchair_status === "UNRECORDED").sort((a, b) => capOf(b) - capOf(a)).slice(0, 5).map((x) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: `${fmt(capOf(x))} spaces`,
+      })),
+      more: Math.max(0, preLandfall.filter((x) => x.wheelchair_status === "UNRECORDED").length - 5),
     },
     {
       title: `Confirm the building height of ${fmt(gaps.shelters_on_flood_hazard_ground?.on_flood_hazard_ground)} shelters on high flood-risk ground`,
-      why: `${fmt(gaps.shelters_on_flood_hazard_ground?.capacity_on_flood_hazard_ground)} of ${fmt(gaps.shelters_on_flood_hazard_ground?.pre_landfall_capacity)} spaces sit in areas FEMA's model rates as highly exposed to coastal flooding.`,
+      why: `${fmt(gaps.shelters_on_flood_hazard_ground?.capacity_on_flood_hazard_ground)} of ${fmt(gaps.shelters_on_flood_hazard_ground?.pre_landfall_capacity)} spaces sit in areas FEMA's model rates as highly exposed to coastal flooding. The largest:`,
       ask: `Which ${county.name} County shelters sit on high coastal-flood ground?`,
+      rows: (gaps.shelters_on_flood_hazard_ground?.largest ?? []).slice(0, 5).map((x: Any) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: `${fmt(x.capacity)} spaces · ${x.pct_tract_flood_exposed}% of area exposed`,
+      })),
+      more: Math.max(0, (gaps.shelters_on_flood_hazard_ground?.on_flood_hazard_ground ?? 0) - 5),
     },
     {
       title: `Confirm backup power at the ${fmt(power?.medical_needs_shelters)} medical-needs shelters`,
-      why: `${fmt(power?.power_dependent_residents)} residents rely on powered medical equipment (county total); none of these shelters has a generator on record.`,
+      why: `${fmt(power?.power_dependent_residents)} residents rely on powered medical equipment (county total). Generator on record:`,
       ask: `How many people in ${county.name} County depend on electricity for medical equipment, and are the medical shelters ready?`,
+      rows: shelters.filter((x) => x.is_medical).sort((a, b) => capOf(b) - capOf(a)).slice(0, 9).map((x) => ({
+        name: <>{x.shelter_name} <small className="muted">{x.city}</small></>,
+        meta: <>{fmt(capOf(x))} spaces · generator {statusTag(x.generator_status)}</>,
+      })),
     },
     {
       title: `Review evacuation plans for ${fmt(gaps.nursing_homes?.on_flood_hazard_ground)} nursing homes on flood-risk ground`,
-      why: `${fmt(gaps.nursing_homes?.beds_on_flood_hazard_ground)} beds in total.`,
+      why: `${fmt(gaps.nursing_homes?.beds_on_flood_hazard_ground)} beds in total. The largest:`,
       ask: `Which ${county.name} County nursing homes are on flood-risk ground?`,
+      rows: (gaps.nursing_homes?.largest ?? []).slice(0, 5).map((x: Any) => ({
+        name: <>{String(x.provider_name).toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())} <small className="muted">{String(x.citytown).toLowerCase().replace(/\b\w/g, (c: string) => c.toUpperCase())}</small></>,
+        meta: `${fmt(x.beds)} beds · nearest medical shelter ${x.miles_nearest_medical_shelter} mi`,
+      })),
+      more: Math.max(0, (gaps.nursing_homes?.on_flood_hazard_ground ?? 0) - 5),
     },
   ] : [];
 
@@ -351,13 +379,24 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
       </section>
 
       <section className="story-section checklist">
-        <div className="story-q"><span className="story-num">✓</span><div><h2>Before September</h2><p>What to assign this month.</p></div></div>
+        <div className="story-q"><span className="story-num">✓</span><div><h2>Before September</h2><p>What to assign this month, and exactly where to start.</p></div></div>
         {!gaps && <div className="skeleton tall" />}
         <ol className="todo">
-          {checklist.map((c) => (
+          {checklist.map((c, n) => (
             <li key={c.title}>
-              <div><b>{c.title}</b><span>{c.why}</span></div>
-              <button className="link-btn" onClick={() => onAsk(c.ask)}>Ask →</button>
+              <div className="todo-head">
+                <span className="todo-num">{n + 1}</span>
+                <div><b>{c.title}</b><span>{c.why}</span></div>
+              </div>
+              {c.rows.length > 0 && (
+                <ul className="todo-list">
+                  {c.rows.map((r, k) => <li key={k}><span>{r.name}</span><span className="meta">{r.meta}</span></li>)}
+                </ul>
+              )}
+              <div className="todo-more">
+                {c.more ? <span className="muted">+ {c.more} more · </span> : null}
+                <button className="link-btn" onClick={() => onAsk(c.ask)}>Ask the assistant for more →</button>
+              </div>
             </li>
           ))}
         </ol>
