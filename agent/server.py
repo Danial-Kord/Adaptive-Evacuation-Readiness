@@ -445,6 +445,8 @@ class _VerifyRequest(BaseModel):
 def story_verify(req: _VerifyRequest) -> Dict[str, Any]:
     from evac_agent.verify import verify_shelters_live
 
+    # Results are shown on screen only: Google Maps content may not be stored (only place_id is kept,
+    # which verify_shelters_live does).
     return verify_shelters_live(req.shelter_ids[:8])
 
 

@@ -94,9 +94,12 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
   const [dest, setDest] = useState<Record<string, { data?: Any; live: boolean; error?: string }>>({});
   const [verify, setVerify] = useState<{ loading: boolean; data?: Any; error?: string }>({ loading: false });
   const [error, setError] = useState<string | null>(null);
+  // Live Google Maps accessibility sweep over never-recorded shelters. Shown on screen only:
+  // Google Maps content may not be stored (only place_id is kept).
+  const [sweep, setSweep] = useState<{ running: boolean; done: number; total: number; yes: number; no: number; notListed: number; failed: number; at?: string } | null>(null);
 
   useEffect(() => {
-    setPri(null); setQuality(null); setGaps(null); setShelters([]); setSelected(undefined); setDest({}); setVerify({ loading: false }); setError(null);
+    setPri(null); setQuality(null); setGaps(null); setShelters([]); setSelected(undefined); setDest({}); setVerify({ loading: false }); setError(null); setSweep(null);
     const c = encodeURIComponent(county.name);
     getJSON(`/api/story/priorities?county=${c}&top_n=6`).then((d) => { setPri(d); setSelected(d.tracts?.[0]?.geo_id); }).catch((e) => setError(String(e)));
     getJSON(`/api/story/quality?county=${c}`).then(setQuality).catch(() => {});
@@ -136,6 +139,36 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
       .catch((e) => setVerify({ loading: false, error: String(e) }));
   };
 
+  const runAccessSweep = async () => {
+    const ids = shelters.filter((x) => x.wheelchair_status === "UNRECORDED").map((x) => Number(x.shelter_id));
+    if (!ids.length) return;
+    const batches: number[][] = [];
+    for (let k = 0; k < ids.length; k += 8) batches.push(ids.slice(k, k + 8));
+    setSweep({ running: true, done: 0, total: ids.length, yes: 0, no: 0, notListed: 0, failed: 0 });
+    let next = 0;
+    const worker = async () => {
+      while (next < batches.length) {
+        const batch = batches[next++];
+        let res: Any[] = [];
+        try {
+          const d = await getJSON(`/api/story/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shelter_ids: batch }) });
+          res = d.results ?? [];
+        } catch { /* counted as failed below */ }
+        const count = (pred: (v: Any) => boolean) => res.filter(pred).length;
+        setSweep((p) => p && {
+          ...p,
+          done: p.done + batch.length,
+          yes: p.yes + count((v) => v.maps_wheelchair_entrance === "yes"),
+          no: p.no + count((v) => v.maps_wheelchair_entrance === "no"),
+          notListed: p.notListed + count((v) => v.verdict !== "UNVERIFIED" && v.verdict !== "LOOKUP_FAILED" && (!v.maps_wheelchair_entrance || v.maps_wheelchair_entrance === "not listed")),
+          failed: p.failed + (batch.length - res.length) + count((v) => v.verdict === "UNVERIFIED" || v.verdict === "LOOKUP_FAILED"),
+        });
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    setSweep((p) => p && { ...p, running: false, at: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) });
+  };
+
   const checklist = gaps ? [
     {
       title: `Set up pickup points for ${fmt(gaps.evacuation_zone_tracts_with_no_shelter_within_1_mile?.households_no_vehicle)} households without a car`,
@@ -173,7 +206,15 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
         <div className="story-stats">
           <div><strong>{fmt(zone?.people)}</strong><span>people live where an evacuation order would apply</span></div>
           <div><strong>{fmt(zone?.no_car_households)}</strong><span>of their households have no car</span></div>
-          <div><strong>{quality ? `${quality.unrecorded_counts.wheelchair} of ${quality.unrecorded_counts.shelters}` : "—"}</strong><span>shelters never checked for wheelchair access</span></div>
+          <div className="stat-alert">
+            <span className="alert-badge">Needs attention</span>
+            <strong>{quality ? `${quality.unrecorded_counts.wheelchair} of ${quality.unrecorded_counts.shelters}` : "—"}</strong>
+            <span>shelters never checked for wheelchair access</span>
+            {sweep && !sweep.running && <span className="stat-update"><b>{sweep.yes}</b> of those show an accessible entrance on <span translate="no">Google Maps</span> (checked {sweep.at}, operator still needs to confirm)</span>}
+            <button className="stat-btn" onClick={runAccessSweep} disabled={!shelters.length || sweep?.running}>
+              {sweep?.running ? `Checking on Google Maps… ${sweep.done} of ${sweep.total}` : sweep ? "Check again" : "Check them on Google Maps"}
+            </button>
+          </div>
           <div><strong>{fmt(power?.power_dependent_residents)}</strong><span>residents rely on powered medical equipment (county total)</span></div>
         </div>
         {error && <p className="story-error">Couldn't load the county data. Please refresh. ({error})</p>}
@@ -262,6 +303,19 @@ export function StoryPage({ county, onAsk }: { county: { name: string; fips: str
               <li><i className="sw no" />{access.NO} recorded as not accessible</li>
               <li><i className="sw unrecorded" /><b>{access.UNRECORDED} never checked</b>: unknown, not “no”</li>
             </ul>
+            {sweep && (
+              <div className="sweep">
+                <div className="sweep-bar"><span style={{ width: `${Math.round((100 * sweep.done) / Math.max(sweep.total, 1))}%` }} /></div>
+                <p className="sweep-title">{sweep.running ? `Checking never-recorded shelters on Google Maps… ${sweep.done} of ${sweep.total}` : `Live check of ${sweep.total} never-recorded shelters (${sweep.at})`}</p>
+                <ul className="access-legend">
+                  <li><i className="sw yes" /><b>{sweep.yes}</b> show a wheelchair-accessible entrance on <span translate="no">Google Maps</span></li>
+                  <li><i className="sw no" />{sweep.no} say the entrance is not accessible</li>
+                  <li><i className="sw unrecorded" />{sweep.notListed} not listed on <span translate="no">Google Maps</span> either: someone has to ask</li>
+                  {sweep.failed > 0 && <li><i className="sw gray" />{sweep.failed} couldn't be checked right now</li>}
+                </ul>
+                <p className="story-note">An accessible entrance isn't proof that a wheelchair user can use the shelter on their own, so these stay unconfirmed until the operator answers. Google Maps results are shown here, not saved (its terms only allow keeping the place ID).</p>
+              </div>
+            )}
             {quality && <p className="story-note">Generators: {quality.unrecorded_counts.generator} of {quality.unrecorded_counts.shelters} never recorded. Storm-surge flag: {quality.unrecorded_counts.surge_flag} never recorded.</p>}
           </article>
           <article className="trust-card">
