@@ -30,8 +30,9 @@ asks for a multi-agent (ADK/MCP) diagram, so the system is multi-agent.
 
 | Thing | Where |
 |---|---|
+| **Dashboard (public, the demo UI)** | https://evac-dashboard-861336771001.us-east1.run.app — React frontend + FastAPI dashboard API (`agent/server.py`) in one Cloud Run service, built from the root `Dockerfile`; `/api/chat` forwards to the agent |
 | Live agent (public, ADK web UI) | https://evac-readiness-agent-861336771001.us-east1.run.app/dev-ui/ → pick `evac_agent` |
-| Agent code (multi-agent) | `agent/evac_agent/` — **branch `agent`** (main has the older single-agent version until merged) |
+| Agent code (multi-agent) | `agent/evac_agent/` (merged to `main`) |
 | Derived BigQuery tables (SQL) | `agent/sql/derived.sql`, built by `agent/sql/build_derived.py` |
 | Eval suite (25 cases) + reports | `evals/` (`python evals/run_evals.py`), reports in `evals/results/` |
 | Data findings | `docs/data_findings.md`; profiling scripts in `data/explore/` |
@@ -151,10 +152,10 @@ registry; Florida only loaded; active emergencies → 911/EOC; no area-wide acce
 ## 7. Open items (as of this writing)
 1. Fill the 6-slide deck (slides 4–7 still template; team name; team table).
 2. Record the <3 min video (hook → architecture → Q1 → Q2 → Q3 → rigor → next step).
-3. Merge `agent` → `main` (main still has the single-agent version); add a project README at repo root;
-   remove or label the old `agent/evacuation_agent` skeleton.
-4. Frontend: Maps attribution box reads grounding chunks, which multi-agent replies don't surface at the
-   top level — the links are in the answer text; verify before recording.
+3. Add a project README at repo root; label the old `agent/evacuation_agent` skeleton (still imported by
+   `agent/server.py`, so don't delete it without updating the server).
+4. Frontend Maps attribution: `/api/chat` now extracts `Google Maps — [name](link)` lines from the reply
+   into `grounding_chunks`, so the attribution box fills for multi-agent replies.
 5. Optional: 65+-living-alone layer (ACS B11007, needs a Census API key), voice operator interviews
    (see `docs/future_work.md`).
 
@@ -166,3 +167,11 @@ registry; Florida only loaded; active emergencies → 911/EOC; no area-wide acce
 - Test locally: `cd agent && python run_test.py "<question>"`; run evals: `python evals/run_evals.py --local --only <ids>`.
 - Deploy: see `agent/evac_agent/README.md` (keep `--min-instances=1`; `requirements.txt` must be inside `evac_agent/`).
 - Keep the rules in §4: three-state flags, labels, attribution, no individual data, race only as audit.
+
+## 9. Deploying the dashboard
+```bash
+gcloud run deploy evac-dashboard --source . --region us-east1 --min-instances 1 --memory 1Gi --timeout 600 \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=qwiklabs-gcp-04-9708a89bd955,BQ_DATASET=evacuation_readiness,STATE=FL,DEPLOYED_AGENT_URL=https://evac-readiness-agent-861336771001.us-east1.run.app,DEPLOYED_AGENT_APP=evac_agent"
+```
+Uses the root `Dockerfile` (builds `frontend/`, serves it from `agent/server.py`) and `.gcloudignore`.
+The agent is deployed separately (see `agent/evac_agent/README.md`).

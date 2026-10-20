@@ -35,3 +35,4 @@ frontend/dist/
 # ADK local state
 .adk/
 
+agent/static/
