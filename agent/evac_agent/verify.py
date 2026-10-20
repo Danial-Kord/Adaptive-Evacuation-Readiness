@@ -7,20 +7,23 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from functools import lru_cache
 
 from google import genai
 from google.genai import types
 
-from .config import MAX_VERIFY, MODEL, PROJECT, RETRY, VERIFY_WORKERS, table
+from .config import MAX_VERIFY, MODEL, PROJECT, RETRY, VERIFY_BUDGET_S, VERIFY_CALL_TIMEOUT_MS, VERIFY_WORKERS, table
 from .data import _bq, _rows
 
 
 @lru_cache(maxsize=1)
 def _client() -> genai.Client:
     return genai.Client(vertexai=True, project=PROJECT, location="global",
-                        http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(**RETRY)))
+                        http_options=types.HttpOptions(
+                            timeout=VERIFY_CALL_TIMEOUT_MS,
+                            retry_options=types.HttpRetryOptions(**{**RETRY, "attempts": 3, "max_delay": 10.0})))
 
 
 def _maps_tool(routing: bool) -> types.Tool:
@@ -90,8 +93,12 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
     # A grounded call sometimes comes back without Maps sources. An answer with no source is the
     # model talking, not Google Maps, so retry, then fall back to places-only before giving up.
     attempts = [True, True, False] if origin else [False, False]
+    deadline = time.monotonic() + VERIFY_BUDGET_S * 0.8
     ans, sources, route, err, grounded = {}, [], None, None, set()
     for use_routing in attempts:
+        if time.monotonic() > deadline:
+            err = err or "time budget exhausted (shared Gemini quota)"
+            break
         try:
             r = _client().models.generate_content(
                 model=MODEL, contents=prompt if use_routing or not origin else PROMPT.format(
@@ -110,7 +117,7 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
                 if route is None:
                     secs = float(str(ch.maps.route.duration or "0s").rstrip("s") or 0)
                     route = {"drive_minutes": round(secs / 60),
-                             "drive_km": round((ch.maps.route.distance_meters or 0) / 1000, 1),
+                             "drive_miles": round((ch.maps.route.distance_meters or 0) / 1609.34, 1),
                              "source": "Google Maps route"}
                 continue
             sources.append({"title": ch.maps.title, "uri": ch.maps.uri, "place_id": ch.maps.place_id})
@@ -168,7 +175,8 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
         access = f"FEMA records {fema_wc}; Google Maps does not say."
 
     if route is None and origin and ans.get("drive_minutes") is not None:
-        route = {"drive_minutes": ans.get("drive_minutes"), "drive_km": ans.get("drive_km"),
+        route = {"drive_minutes": ans.get("drive_minutes"),
+                 "drive_miles": round(ans["drive_km"] * 0.621, 1) if ans.get("drive_km") else None,
                  "source": "Google Maps grounded answer (no route object returned)"
                  if "drive" in grounded else "model-reported, not cited: treat as approximate"}
 
@@ -199,6 +207,27 @@ def _store_place_ids(results: list[dict]) -> None:
             pass
 
 
+def _run_bounded(items: list, fn) -> list[dict]:
+    """Run fn over items in parallel, but never wait longer than VERIFY_BUDGET_S. A lookup stuck behind
+    the shared Gemini quota comes back UNVERIFIED instead of freezing the whole answer."""
+    _client()  # build the shared client before the threads race to create (and drop) their own
+    ex = ThreadPoolExecutor(max_workers=VERIFY_WORKERS)
+    futures = [ex.submit(fn, it) for it in items]
+    wait(futures, timeout=VERIFY_BUDGET_S)
+    out = []
+    for it, f in zip(items, futures):
+        if f.done() and not f.exception():
+            out.append(f.result())
+        else:
+            sid = it[0] if isinstance(it, tuple) else it["shelter_id"]
+            out.append({"shelter_id": sid, "verdict": "UNVERIFIED", "flags": [],
+                        "action": "Live check did not finish in time (shared Gemini quota); re-check before relying on it.",
+                        "accessibility": "not checked live", "drive": None, "google_maps_sources": [],
+                        "checked_at": None, "origin_tract": it[1] if isinstance(it, tuple) else None})
+    ex.shutdown(wait=False, cancel_futures=True)
+    return out
+
+
 def verify_shelters_live(shelter_ids: list[int], origin_tract: str = "") -> dict:
     """Checks FEMA shelter records against Google Maps right now, one building at a time:
     does it still exist, has it been renamed, is it closed, does Maps list a wheelchair-accessible
@@ -227,9 +256,7 @@ def verify_shelters_live(shelter_ids: list[int], origin_tract: str = "") -> dict
     if origin_tract:
         t = _rows(f"SELECT lat, lon FROM {table('tract_readiness')} WHERE geo_id=@g", g=origin_tract)
         origin = (t[0]["lat"], t[0]["lon"]) if t else None
-    _client()  # build the shared client before the threads race to create (and drop) their own
-    with ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
-        results = list(ex.map(lambda s: _verify_one(s, origin), rows))
+    results = _run_bounded(rows, lambda s: _verify_one(s, origin))
     _store_place_ids(results)
     tally: dict[str, int] = {}
     for r in results:
@@ -251,9 +278,7 @@ def verify_pairs(pairs: list[tuple[int, str]]) -> dict[int, dict]:
     tracts = ",".join(f"'{g}'" for _, g in pairs if g)
     origins = {r["geo_id"]: (r["lat"], r["lon"]) for r in _rows(
         f"SELECT geo_id, lat, lon FROM {table('tract_readiness')} WHERE geo_id IN ({tracts})")} if tracts else {}
-    _client()
-    with ThreadPoolExecutor(max_workers=VERIFY_WORKERS) as ex:
-        results = list(ex.map(lambda p: _verify_one(shelters[p[0]], origins.get(p[1])),
-                              [p for p in pairs if p[0] in shelters]))
+    results = _run_bounded([p for p in pairs if p[0] in shelters],
+                           lambda p: {**_verify_one(shelters[p[0]], origins.get(p[1])), "origin_tract": p[1]})
     _store_place_ids(results)
     return {r["shelter_id"]: r for r in results}

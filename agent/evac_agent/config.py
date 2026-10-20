@@ -18,6 +18,9 @@ COASTAL_FLOOD_SHARE = 0.25
 # Parallel Maps grounding calls (5-8 s each).
 VERIFY_WORKERS = 4
 MAX_VERIFY = 15
+# Hard limits so a quota stall can never freeze an answer: per Gemini call, and per batch of checks.
+VERIFY_CALL_TIMEOUT_MS = 40_000
+VERIFY_BUDGET_S = 75
 
 
 def table(name: str) -> str:

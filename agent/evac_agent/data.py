@@ -11,6 +11,8 @@ from google.cloud import bigquery
 
 from .config import DRIVE_KM, PROJECT, WALK_KM, table
 
+KM_TO_MI = 0.621
+
 
 @lru_cache(maxsize=1)
 def _bq() -> bigquery.Client:
@@ -67,8 +69,8 @@ def _reach_label(km: float, share_no_vehicle: float | None) -> str:
     if km <= WALK_KM:
         return "walkable (within 1 mile)"
     if km <= DRIVE_KM:
-        return "needs a vehicle: households here without one need a pickup"
-    return "beyond 25 km: not a realistic destination without organized transport"
+        return "beyond walking distance: households here without a vehicle need a pickup"
+    return "beyond 15 miles (25 km): not a realistic destination without organized transport"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -109,8 +111,8 @@ def find_people_who_cannot_self_evacuate(county: str, top_n: int = 10) -> dict:
           ROUND(100 * share_no_vehicle, 1) pct_households_no_vehicle, pop_65_plus,
           ROUND(est_mobility_disabled_modeled) mobility_disabled_modeled, mobile_homes,
           group_quarters_pop, evacuation_driver, ROUND(100 * coastal_flood_share) pct_coastal_flood_exposed,
-          ROUND(km_nearest_shelter, 1) km_nearest_shelter,
-          ROUND(km_nearest_recorded_accessible, 1) km_nearest_recorded_wheelchair_yes,
+          ROUND(0.621 * km_nearest_shelter, 1) miles_nearest_shelter,
+          ROUND(0.621 * km_nearest_recorded_accessible, 1) miles_nearest_recorded_wheelchair_yes,
           n_within_walk shelters_within_1_mile, n_within_walk_wc_yes, n_within_walk_wc_no,
           n_within_walk_wc_unrecorded, ROUND(priority_score, 3) priority_score,
           pr_no_vehicle, pr_mobility, pr_65_plus, pr_mobile_homes
@@ -129,7 +131,7 @@ def find_people_who_cannot_self_evacuate(county: str, top_n: int = 10) -> dict:
     return {
         "county": name, "county_fips": fips, "county_totals": totals, "tracts": tracts,
         "method": "Percentile ranks within county of counts; no-vehicle households weighted x2. "
-                  "No race/ethnicity input. Distances are straight-line to pre-landfall (EVAC/BOTH) shelters.",
+                  "No race/ethnicity input. Distances are straight-line miles to pre-landfall (EVAC/BOTH) shelters.",
         "source": "ACS 2022 5-yr, CDC SVI 2022, CDC PLACES 2025 (modeled), FEMA NRI. Historical/statistical, not live.",
     }
 
@@ -165,6 +167,7 @@ def shelter_options_for_tract(geo_id: str, limit: int = 6) -> dict:
           AND ST_DWITHIN(ST_GEOGPOINT(longitude, latitude), ST_GEOGPOINT(@lon, @lat), 40000)
         ORDER BY km LIMIT @n""", lat=float(t["lat"]), lon=float(t["lon"]), n=limit)
     for s in shelters:
+        s["miles"] = round(s["km"] * KM_TO_MI, 1)
         s["reachability"] = _reach_label(s["km"], t["share_no_vehicle"])
         cap = s.pop("evacuation_capacity")
         s["capacity"] = "UNRECORDED" if cap is None else ("0 recorded (verify)" if cap == 0 else cap)
@@ -231,7 +234,7 @@ def county_gap_report(county: str) -> dict:
     T, S, C, P = table("tract_readiness"), table("shelters_enriched"), table("care_enriched"), table("power_dependent_counties")
     walk = _rows(f"""
         SELECT COUNT(*) tracts, SUM(total_pop) population, SUM(hh_no_vehicle) households_no_vehicle,
-          ARRAY_AGG(STRUCT(geo_id, hh_no_vehicle, ROUND(km_nearest_shelter,1) AS km_nearest)
+          ARRAY_AGG(STRUCT(geo_id, hh_no_vehicle, ROUND(0.621 * km_nearest_shelter,1) AS miles_nearest_shelter)
                     ORDER BY hh_no_vehicle DESC LIMIT 8) worst
         FROM {T} WHERE county_fips=@fips AND evacuation_driver IS NOT NULL AND n_within_walk = 0""", fips=fips)[0]
     access = _rows(f"""
@@ -239,8 +242,8 @@ def county_gap_report(county: str) -> dict:
           COUNTIF(n_within_drive_wc_yes = 0) tracts_no_recorded_accessible_within_25km,
           COUNTIF(n_within_drive_wc_yes = 0 AND n_within_drive_wc_unrecorded > 0) of_those_tracts_with_unassessed_shelters_within_25km,
           SUM(IF(n_within_drive_wc_yes = 0, total_pop, 0)) population_affected,
-          ROUND(APPROX_QUANTILES(km_nearest_shelter, 2)[OFFSET(1)], 1) median_km_any_shelter,
-          ROUND(APPROX_QUANTILES(km_nearest_recorded_accessible, 2)[OFFSET(1)], 1) median_km_recorded_accessible
+          ROUND(0.621 * APPROX_QUANTILES(km_nearest_shelter, 2)[OFFSET(1)], 1) median_miles_any_shelter,
+          ROUND(0.621 * APPROX_QUANTILES(km_nearest_recorded_accessible, 2)[OFFSET(1)], 1) median_miles_recorded_accessible
         FROM {T} WHERE county_fips=@fips""", fips=fips)[0]
     flood = _rows(f"""
         SELECT COUNTIF(pre_landfall) pre_landfall_shelters,
@@ -260,8 +263,8 @@ def county_gap_report(county: str) -> dict:
           (SELECT COUNTIF(is_medical AND generator='YES') FROM {S} WHERE county_fips=@fips) medical_with_recorded_generator,
           (SELECT COUNTIF(is_medical AND generator='UNRECORDED') FROM {S} WHERE county_fips=@fips) medical_generator_unrecorded,
           (SELECT MAX(power_dependent_dme) FROM {P} WHERE fips_code=@fips) power_dependent_residents,
-          (SELECT MAX(o2_services_any_dme) FROM {P} WHERE fips_code=@fips) oxygen_dependent,
-          (SELECT MAX(facility_esrd_dialysis_any_dme) FROM {P} WHERE fips_code=@fips) dialysis_dependent,
+          (SELECT MAX(o2_services_any_dme) FROM {P} WHERE fips_code=@fips) oxygen_service_users_with_power_dependent_equipment,
+          (SELECT MAX(facility_esrd_dialysis_any_dme) FROM {P} WHERE fips_code=@fips) facility_dialysis_patients_with_power_dependent_equipment,
           (SELECT LOGICAL_OR(power_dependent_is_censored) FROM {P} WHERE fips_code=@fips) power_count_censored""",
         fips=fips)[0]
     care = _rows(f"""
@@ -269,7 +272,7 @@ def county_gap_report(county: str) -> dict:
           COUNTIF(site_coastal_flood_exposed) on_flood_hazard_ground,
           SUM(IF(site_coastal_flood_exposed, beds, 0)) beds_on_flood_hazard_ground,
           ARRAY_AGG(IF(site_coastal_flood_exposed, STRUCT(provider_name, citytown, beds,
-                    ROUND(km_nearest_medical_shelter,1) AS km_nearest_medical_shelter), NULL)
+                    ROUND(0.621 * km_nearest_medical_shelter,1) AS miles_nearest_medical_shelter), NULL)
                     IGNORE NULLS ORDER BY beds DESC LIMIT 6) largest
         FROM {C} WHERE county_fips=@fips""", fips=fips)[0]
     unknown = _rows(f"""
@@ -290,7 +293,9 @@ def county_gap_report(county: str) -> dict:
         "caveats": [
             "Flood-hazard ground = recorded surge flag YES, or >=25% of the surrounding tract's population "
             "exposed to coastal flooding (FEMA NRI). Tract-level, not the building's own elevation.",
-            "Power dependence (HHS emPOWER) is county-level only: how many, never which block.",
+            "Power dependence (HHS emPOWER) is county-level only: how many, never which block. The dialysis "
+            "figure counts end-stage kidney disease patients dialysing at a FACILITY who also use power-dependent "
+            "equipment at home (not home dialysis); facility dialysis needs the clinic open after landfall.",
             "A tract with 'no recorded-accessible shelter' may have accessible shelters nobody assessed.",
         ],
     }

@@ -57,7 +57,7 @@ def build_readiness_brief(county: str, top_n: int = 5, options_per_tract: int = 
             v = verified.get(o["shelter_id"])
             entry = {
                 "shelter_id": o["shelter_id"], "name": o["shelter_name"], "address": f"{o['address']}, {o['city']}",
-                "straight_line_km": o["km"], "reachability": o["reachability"], "capacity": o["capacity"],
+                "straight_line_miles": o["miles"], "reachability": o["reachability"], "capacity": o["capacity"],
                 "fema_record": {"wheelchair": o["wheelchair"], "generator": o["generator"], "surge_flag": o["surge_flag"],
                                 "medical_needs": o["is_medical"], "source": o["record_source"]},
                 "site_on_flood_hazard_ground": o["site_in_flood_hazard"],
@@ -67,7 +67,15 @@ def build_readiness_brief(county: str, top_n: int = 5, options_per_tract: int = 
                 entry["live_check"] = {k: v.get(k) for k in ("verdict", "action", "flags", "accessibility", "drive",
                                                              "google_maps_sources", "checked_at")}
                 entry["live_check"]["maps_name"] = (v.get("google_maps_says") or {}).get("maps_name")
+                if v.get("origin_tract") != t["geo_id"]:
+                    # The drive was routed from another tract that shares this shelter; don't reuse it.
+                    entry["live_check"]["drive"] = {"note": f"drive time measured from tract {v.get('origin_tract')}, "
+                                                            f"not this one; use straight-line miles"}
             ok = (v is None or v["verdict"] in USABLE) and not (v and "temporarily closed" in " ".join(v.get("flags", [])))
+            if ok and (o["capacity"] == "UNRECORDED" or str(o["capacity"]).startswith("0")):
+                # The building may be fine, but a plan cannot count spaces nobody recorded.
+                ok = False
+                entry["capacity_issue"] = "no usable capacity on record: confirm spaces with the operator"
             entry["usable_in_plan"] = ok if v else "not verified"
             if ok:
                 usable_any += 1
