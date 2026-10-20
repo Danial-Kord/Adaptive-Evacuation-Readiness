@@ -77,7 +77,7 @@ def rank_priority_tracts(tool_context: ToolContext, county: str = "", top_n: int
         scope = f"{name} County"
     top_n = max(1, min(int(top_n), 25))
     rows = _rows(f"""
-        SELECT geo_id, county_name, near_city, total_pop, hh_no_vehicle, pop_65_plus,
+        SELECT geo_id, county_name, near_city, ROUND(lat, 5) lat, ROUND(lon, 5) lon, total_pop, hh_no_vehicle, pop_65_plus,
           ROUND(est_mobility_disabled_modeled) mobility_disabled_modeled, mobile_homes,
           ROUND(100 * coastal_flood_share) pct_coastal_flood_exposed, est_no_car_mobility_hh_modeled,
           evacuation_driver, pts_no_car, pts_older, pts_disability, pts_mobile_homes, pts_flood,
