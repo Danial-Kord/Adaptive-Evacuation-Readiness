@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import {
@@ -13,6 +13,17 @@ import {
 } from "../services/dashboardApi";
 import { OpenHoursHistogram } from "./OpenHoursHistogram";
 import { MapsAttribution } from "./MapsAttribution";
+import {
+  ActionDecisionRecord,
+  ActionDecisionStatus,
+  RecommendedAction,
+} from "../types/brief";
+import {
+  FocusLocationTarget,
+  getAgentMeta,
+  RecommendedActionCard,
+  resolveActionFromTo,
+} from "./AgentSchemaCards";
 
 interface Props {
   data: DashboardData;
@@ -21,6 +32,27 @@ interface Props {
   inspectedPoint?: { lat: number; lng: number; label?: string } | null;
   radiusKm?: number;
   onInspectPoint?: (lat: number, lng: number, label?: string) => void;
+  /** Pending (undecided) agent actions synchronized with the Chat Widget */
+  pendingActions?: RecommendedAction[];
+  /** Currently focused action ID on the map & chat */
+  activeActionId?: string | null;
+  onSelectAction?: (actionId: string) => void;
+  /** Synchronized option selection per action_id between Map and Chat */
+  selectedOptionsByAction?: Record<string, string>;
+  onSelectActionOption?: (actionId: string, optionId: string) => void;
+  /** Synchronized Approve / Reject handler — dismisses from both Map and Chat */
+  decisions?: Record<string, ActionDecisionRecord>;
+  onDecideAction?: (
+    action: RecommendedAction,
+    decision: ActionDecisionStatus,
+    selectedOptionId?: string,
+    note?: string,
+    sendFollowUp?: boolean
+  ) => void;
+  decidingActionId?: string | null;
+  /** Explicit focus/zoom request from either Chat or Map widget */
+  focusTarget?: FocusLocationTarget | null;
+  onFocusLocation?: (target: FocusLocationTarget) => void;
 }
 
 export function CountyMap({
@@ -30,18 +62,51 @@ export function CountyMap({
   inspectedPoint = null,
   radiusKm = 15,
   onInspectPoint,
+  pendingActions = [],
+  activeActionId = null,
+  onSelectAction,
+  selectedOptionsByAction = {},
+  onSelectActionOption,
+  decisions = {},
+  onDecideAction,
+  decidingActionId = null,
+  focusTarget = null,
+  onFocusLocation,
 }: Props) {
   const element = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markers = useRef(new Map<string, L.Marker>());
   const inspectLayerRef = useRef<L.LayerGroup | null>(null);
+  const actionLayerRef = useRef<L.LayerGroup | null>(null);
   const onInspectRef = useRef(onInspectPoint);
   onInspectRef.current = onInspectPoint;
+  const onSelectOptionRef = useRef(onSelectActionOption);
+  onSelectOptionRef.current = onSelectActionOption;
 
   const [showShelters, setShowShelters] = useState(true);
   const [showTracts, setShowTracts] = useState(true);
   const [onlyYes, setOnlyYes] = useState(false);
   const [tilesUnavailable, setTilesUnavailable] = useState(false);
+  const [mapWidgetCollapsed, setMapWidgetCollapsed] = useState(false);
+
+  // Determine the active pending action to display & highlight on the map
+  const activeAction = useMemo(() => {
+    if (!pendingActions.length) return null;
+    if (activeActionId) {
+      const match = pendingActions.find((a) => a.action_id === activeActionId);
+      if (match) return match;
+    }
+    return pendingActions[0];
+  }, [pendingActions, activeActionId]);
+
+  const activeSelectedOptionId = activeAction
+    ? selectedOptionsByAction[activeAction.action_id]
+    : undefined;
+
+  const resolvedFromTo = useMemo(() => {
+    if (!activeAction) return null;
+    return resolveActionFromTo(activeAction, activeSelectedOptionId, data);
+  }, [activeAction, activeSelectedOptionId, data]);
 
   // Floating Shelter Card state
   const [activeShelter, setActiveShelter] = useState<DashboardShelter | null>(null);
@@ -94,6 +159,7 @@ export function CountyMap({
     tiles.on("tileerror", () => setTilesUnavailable(true));
 
     inspectLayerRef.current = L.layerGroup().addTo(map);
+    actionLayerRef.current = L.layerGroup().addTo(map);
 
     map.on("click", (e: L.LeafletMouseEvent) => {
       clearHideTimer();
@@ -114,6 +180,7 @@ export function CountyMap({
       map.remove();
       mapRef.current = null;
       inspectLayerRef.current = null;
+      actionLayerRef.current = null;
     };
   }, []);
 
@@ -327,36 +394,291 @@ export function CountyMap({
     };
   })() : null;
 
+  // Render FROM -> TO connection lines, candidate options, and auto-zoom to the targeted area
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = actionLayerRef.current;
+    if (!map || !layer) return;
+    layer.clearLayers();
+
+    if (!activeAction || !resolvedFromTo) return;
+
+    const { from, to, candidates } = resolvedFromTo;
+    const boundsPoints: [number, number][] = [];
+
+    // 1. Draw alternative unselected candidate option connectors
+    if (from && candidates.length > 1) {
+      for (const cand of candidates) {
+        if (cand.selected) continue;
+        L.polyline(
+          [
+            [from.lat, from.lng],
+            [cand.lat, cand.lng],
+          ],
+          {
+            color: "#64748b",
+            weight: 2,
+            opacity: 0.55,
+            dashArray: "5 7",
+          }
+        ).addTo(layer);
+
+        const altMarker = L.marker([cand.lat, cand.lng], {
+          icon: L.divIcon({
+            className: "map-from-to-marker-wrap",
+            html: `<div class="map-endpoint-badge map-endpoint-badge--alt" title="Click to select option: ${cand.label}">
+              <span class="map-endpoint-dot"></span>
+              <span class="map-endpoint-tag">ALT OPTION</span>
+              <span class="map-endpoint-name">${cand.label}</span>
+            </div>`,
+            iconSize: [160, 28],
+            iconAnchor: [80, 14],
+          }),
+        }).addTo(layer);
+
+        altMarker.on("click", (e: L.LeafletMouseEvent) => {
+          L.DomEvent.stopPropagation(e);
+          onSelectOptionRef.current?.(activeAction.action_id, cand.optionId);
+        });
+      }
+    }
+
+    // 2. Draw primary FROM -> TO connection line + midpoint callout
+    if (from && to && (from.lat !== to.lat || from.lng !== to.lng)) {
+      const latlngs: [number, number][] = [
+        [from.lat, from.lng],
+        [to.lat, to.lng],
+      ];
+
+      // Outer highlight glow
+      L.polyline(latlngs, {
+        color: "#1d4ed8",
+        weight: 10,
+        opacity: 0.22,
+        lineCap: "round",
+      }).addTo(layer);
+
+      // Animated dashed core line
+      L.polyline(latlngs, {
+        color: "#0284c7",
+        weight: 3.5,
+        opacity: 0.95,
+        dashArray: "10 7",
+        className: "map-from-to-animated-line",
+      }).addTo(layer);
+
+      // Midpoint route callout badge
+      const midLat = (from.lat + to.lat) / 2;
+      const midLng = (from.lng + to.lng) / 2;
+      const routeText = to.routeLabel || "FROM → TO Route";
+      L.marker([midLat, midLng], {
+        interactive: false,
+        icon: L.divIcon({
+          className: "map-route-pill-wrap",
+          html: `<div class="map-route-pill">➔ ${routeText}</div>`,
+          iconSize: [140, 24],
+          iconAnchor: [70, 12],
+        }),
+      }).addTo(layer);
+    }
+
+    // 3. Draw FROM origin pulsing marker & badge
+    if (from) {
+      boundsPoints.push([from.lat, from.lng]);
+
+      L.circleMarker([from.lat, from.lng], {
+        radius: 14,
+        color: "#d97706",
+        weight: 2.5,
+        fillColor: "#f59e0b",
+        fillOpacity: 0.22,
+      }).addTo(layer);
+
+      const fromMarker = L.marker([from.lat, from.lng], {
+        icon: L.divIcon({
+          className: "map-from-to-marker-wrap",
+          html: `<div class="map-endpoint-badge map-endpoint-badge--from">
+            <span class="map-endpoint-pulse map-endpoint-pulse--from"></span>
+            <span class="map-endpoint-tag">FROM</span>
+            <span class="map-endpoint-name">${from.label}</span>
+          </div>`,
+          iconSize: [190, 32],
+          iconAnchor: [95, 36],
+        }),
+      }).addTo(layer);
+
+      fromMarker.on("click", (e: L.LeafletMouseEvent) => {
+        L.DomEvent.stopPropagation(e);
+        if (from.kind && from.id && (from.kind === "tract" || from.kind === "shelter")) {
+          onSelect(from.kind, from.id);
+        }
+        onInspectRef.current?.(from.lat, from.lng, `FROM: ${from.label}`);
+      });
+    }
+
+    // 4. Draw TO destination pulsing marker & badge
+    if (to) {
+      boundsPoints.push([to.lat, to.lng]);
+
+      L.circleMarker([to.lat, to.lng], {
+        radius: 14,
+        color: "#059669",
+        weight: 2.5,
+        fillColor: "#10b981",
+        fillOpacity: 0.25,
+      }).addTo(layer);
+
+      const toMarker = L.marker([to.lat, to.lng], {
+        icon: L.divIcon({
+          className: "map-from-to-marker-wrap",
+          html: `<div class="map-endpoint-badge map-endpoint-badge--to">
+            <span class="map-endpoint-pulse map-endpoint-pulse--to"></span>
+            <span class="map-endpoint-tag">TO</span>
+            <span class="map-endpoint-name">${to.label}</span>
+          </div>`,
+          iconSize: [190, 32],
+          iconAnchor: [95, -6],
+        }),
+      }).addTo(layer);
+
+      toMarker.on("click", (e: L.LeafletMouseEvent) => {
+        L.DomEvent.stopPropagation(e);
+        if (to.kind && to.id && (to.kind === "tract" || to.kind === "shelter")) {
+          onSelect(to.kind, to.id);
+        }
+        onInspectRef.current?.(to.lat, to.lng, `TO: ${to.label}`);
+      });
+    }
+
+    // Auto-zoom to frame the targeted FROM -> TO area
+    if (boundsPoints.length >= 2) {
+      const bounds = L.latLngBounds(boundsPoints);
+      map.flyToBounds(bounds.pad(0.35), {
+        maxZoom: 13,
+        duration: 0.65,
+      });
+    } else if (boundsPoints.length === 1) {
+      map.flyTo(boundsPoints[0], 13, { duration: 0.65 });
+    }
+  }, [activeAction, resolvedFromTo, onSelect]);
+
+  // Also respond to explicit focusTarget requests from Chat or Schema cards
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !focusTarget) return;
+
+    if (
+      typeof focusTarget.fromLat === "number" &&
+      typeof focusTarget.fromLng === "number" &&
+      typeof focusTarget.toLat === "number" &&
+      typeof focusTarget.toLng === "number"
+    ) {
+      const bounds = L.latLngBounds([
+        [focusTarget.fromLat, focusTarget.fromLng],
+        [focusTarget.toLat, focusTarget.toLng],
+      ]);
+      map.flyToBounds(bounds.pad(0.35), { maxZoom: 13, duration: 0.65 });
+    } else if (
+      typeof focusTarget.latitude === "number" &&
+      typeof focusTarget.longitude === "number"
+    ) {
+      map.flyTo([focusTarget.latitude, focusTarget.longitude], 13, {
+        duration: 0.65,
+      });
+    }
+  }, [focusTarget]);
+
+  const handleZoomActiveFromTo = () => {
+    const map = mapRef.current;
+    if (!map || !resolvedFromTo) return;
+    const pts: [number, number][] = [];
+    if (resolvedFromTo.from) pts.push([resolvedFromTo.from.lat, resolvedFromTo.from.lng]);
+    if (resolvedFromTo.to) pts.push([resolvedFromTo.to.lat, resolvedFromTo.to.lng]);
+    if (pts.length >= 2) {
+      map.flyToBounds(L.latLngBounds(pts).pad(0.35), { maxZoom: 13, duration: 0.65 });
+    } else if (pts.length === 1) {
+      map.flyTo(pts[0], 13, { duration: 0.65 });
+    }
+  };
+
   return (
     <section className="planning-card map-card" aria-label="County readiness map">
       <div className="panel-heading">
         <div>
-          <h2>Shelters & priority areas</h2>
+          <h2>Shelters &amp; priority areas</h2>
           <p>
-            Registered sites and the top 15 no-vehicle household tracts ·{" "}
-            <strong>Click anywhere on the map or any marker to inspect geolocation area details</strong>
+            Registered sites, top 15 no-vehicle tracts, and live{" "}
+            <strong>FROM → TO agent decision routing</strong>
           </p>
         </div>
-        <span className="small-tag">Click map to inspect area</span>
+        <div className="map-heading-badges">
+          {activeAction && resolvedFromTo?.from && resolvedFromTo?.to && (
+            <button
+              type="button"
+              className="map-zoom-route-btn"
+              onClick={handleZoomActiveFromTo}
+              title="Auto-zoom map to active FROM → TO connection"
+            >
+              ⊕ Zoom FROM → TO
+            </button>
+          )}
+          <span className="small-tag">Click map to inspect area</span>
+        </div>
       </div>
+
       <div className="map-toolbar">
         <label>
-          <input type="checkbox" checked={showTracts} onChange={e => setShowTracts(e.target.checked)} /> Priority tract
-          centroids
+          <input
+            type="checkbox"
+            checked={showTracts}
+            onChange={(e) => setShowTracts(e.target.checked)}
+          />{" "}
+          Priority tract centroids
         </label>
         <label>
-          <input type="checkbox" checked={showShelters} onChange={e => setShowShelters(e.target.checked)} /> Shelters
+          <input
+            type="checkbox"
+            checked={showShelters}
+            onChange={(e) => setShowShelters(e.target.checked)}
+          />{" "}
+          Shelters
         </label>
         <label>
           <input
             type="checkbox"
             checked={onlyYes}
-            onChange={e => setOnlyYes(e.target.checked)}
+            onChange={(e) => setOnlyYes(e.target.checked)}
             disabled={!showShelters}
           />{" "}
           Recorded YES only
         </label>
+
+        {pendingActions.length > 0 && (
+          <div className="map-toolbar-actions-switcher">
+            <span className="map-switcher-label">
+              ✧ Map Decisions ({pendingActions.length} pending):
+            </span>
+            {pendingActions.map((act, idx) => {
+              const meta = getAgentMeta(act.source_agent);
+              const isCurrent = activeAction?.action_id === act.action_id;
+              return (
+                <button
+                  key={act.action_id}
+                  type="button"
+                  className={`map-action-tab-pill ${isCurrent ? "active" : ""}`}
+                  onClick={() => {
+                    onSelectAction?.(act.action_id);
+                    setMapWidgetCollapsed(false);
+                  }}
+                >
+                  {idx + 1}. {meta.shortLabel}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
+
       <div className="map-stage">
         <div ref={element} className="planning-map" />
 
@@ -448,8 +770,72 @@ export function CountyMap({
           </aside>
         )}
 
+        {/* On-Map Synchronized Agent Decision Widget Overlay */}
+        {activeAction && onDecideAction && (
+          <div
+            className={`map-action-widget-overlay ${
+              mapWidgetCollapsed ? "collapsed" : ""
+            }`}
+            aria-label="On-map agent decision widget"
+          >
+            <div className="map-action-widget-bar">
+              <div className="map-action-widget-title">
+                <span className="map-action-live-dot" />
+                <strong>On-Map Agent Decision</strong>
+                <span className="map-action-count-pill">
+                  {pendingActions.length} Pending · Synced with Chat
+                </span>
+              </div>
+              <div className="map-action-widget-controls">
+                <button
+                  type="button"
+                  className="map-widget-ctrl-btn"
+                  onClick={handleZoomActiveFromTo}
+                  title="Auto-zoom to FROM → TO area"
+                >
+                  ⊕ Fit Route
+                </button>
+                <button
+                  type="button"
+                  className="map-widget-ctrl-btn"
+                  onClick={() => setMapWidgetCollapsed((c) => !c)}
+                >
+                  {mapWidgetCollapsed ? "▲ Expand Card" : "▼ Minimize"}
+                </button>
+              </div>
+            </div>
+
+            {!mapWidgetCollapsed && (
+              <div className="map-action-widget-body">
+                <RecommendedActionCard
+                  key={`map-card-${activeAction.action_id}`}
+                  action={activeAction}
+                  decision={decisions[activeAction.action_id]}
+                  selectedOptionId={selectedOptionsByAction[activeAction.action_id]}
+                  onSelectOption={onSelectActionOption}
+                  onDecide={onDecideAction}
+                  onFocusLocation={(target) => {
+                    onFocusLocation?.(target);
+                    handleZoomActiveFromTo();
+                  }}
+                  dashboardData={data}
+                  isFocusedOnMap={true}
+                  compactMapMode={true}
+                  busy={decidingActionId === activeAction.action_id}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="map-key">
-          <strong>Wheelchair record</strong>
+          <strong>Map Legend</strong>
+          <span>
+            <i className="key-dot from-pin" /> FROM Origin
+          </span>
+          <span>
+            <i className="key-dot to-pin" /> TO Destination
+          </span>
           <span>
             <i className="key-dot yes" /> YES
           </span>
@@ -460,14 +846,13 @@ export function CountyMap({
             <i className="key-dot unknown" /> UNRECORDED
           </span>
           <span>
-            <i className="key-dot tract" /> Priority tract centroid
+            <i className="key-dot tract" /> Tract centroid
           </span>
         </div>
       </div>
       <div className="map-footnote">
         {tilesUnavailable ? "Basemap unavailable — check network access. Points use source coordinates. " : ""}
-        Centroids show approximate tract locations. Click any point on the map to fetch BigQuery spatial records and
-        live Google Maps Grounding details.
+        Approving or rejecting a recommendation on the map or in the chat dismisses it from both views simultaneously.
       </div>
     </section>
   );

@@ -84,6 +84,123 @@ export interface ChatResponse {
   elapsed_seconds?: number;
   agent_url?: string;
   grounding_chunks: MapsGroundingChunk[];
+  recommended_actions?: RecommendedAction[];
+  agent_outputs?: AgentSchemaOutput[];
+}
+
+export type ActionType =
+  | "ORGANIZE_BUS_PICKUP"
+  | "OLDER_ADULT_CHECKIN"
+  | "DISABILITY_ACCESSIBLE_TRANSPORT"
+  | "MOBILE_HOME_EVACUATION_OUTREACH"
+  | "ADJUST_PRIORITY_WEIGHTS"
+  | "SELECT_TRACT_DESTINATION"
+  | "DESIGNATE_BUS_PICKUP_POINT"
+  | "SCHEDULE_PARATRANSIT_PICKUP"
+  | "EXCLUDE_SURGE_ZONE_SHELTER"
+  | "CONFIRM_SHELTER_CAPACITY"
+  | "VERIFY_FLOOD_GROUND_ELEVATION"
+  | "DROP_CLOSED_SHELTER"
+  | "IN_PERSON_BUILDING_CHECK"
+  | "UPDATE_SHELTER_REGISTRY_NAME"
+  | "RESOLVE_CONTRADICTORY_RECORDS"
+  | "INTERVIEW_SHELTER_OPERATOR"
+  | "APPROVE_SHELTER_ASSESSMENT_WRITEBACK"
+  | "AUDIT_UNASSESSED_NEARBY_SHELTERS"
+  | "VERIFY_MEDICAL_SHELTER_GENERATORS"
+  | "PLAN_NURSING_HOME_EVACUATION";
+
+export type InteractionMode =
+  | "APPROVAL_REQUIRED"
+  | "SELECT_BETWEEN_OPTIONS"
+  | "INFO_ATTENTION";
+
+export type ActionSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+
+export interface LocationInfo {
+  lat?: number | null;
+  lon?: number | null;
+  label?: string | null;
+  address?: string | null;
+  city?: string | null;
+  county?: string | null;
+  county_fips?: string | null;
+  tract_geoid?: string | null;
+  shelter_id?: number | null;
+  facility_id?: string | null;
+}
+
+export interface AttentionItem {
+  label: string;
+  value: string;
+  badge?: string | null;
+  is_warning?: boolean;
+  maps_title?: string | null;
+  maps_uri?: string | null;
+}
+
+export interface ActionOption {
+  option_id: string;
+  label: string;
+  description?: string | null;
+  recommended?: boolean;
+  location?: LocationInfo | null;
+  metrics?: Record<string, any>;
+  warnings?: string[];
+}
+
+export interface ApprovalDetails {
+  confirm_label?: string;
+  reject_label?: string;
+  proposed_change: string;
+  target_entity_type: string;
+  target_entity_id: string;
+  payload?: Record<string, any>;
+  irreversible_or_high_impact?: boolean;
+}
+
+export interface RecommendedAction {
+  action_id: string;
+  action_type: ActionType | string;
+  interaction_mode: InteractionMode;
+  severity: ActionSeverity;
+  title: string;
+  summary: string;
+  rationale: string;
+  source_agent: string;
+  source_tool: string;
+  location?: LocationInfo | null;
+  from_location?: LocationInfo | null;
+  to_location?: LocationInfo | null;
+  affected_residents?: number | null;
+  affected_households?: number | null;
+  capacity_at_stake?: number | null;
+  attention_items?: AttentionItem[];
+  requires_approval?: boolean;
+  approval?: ApprovalDetails | null;
+  requires_selection?: boolean;
+  options?: ActionOption[];
+  selected_option_id?: string | null;
+}
+
+export interface AgentSchemaOutput {
+  agent_name: string;
+  tool_name: string;
+  schema_name: string;
+  data: Record<string, any>;
+}
+
+export type ActionDecisionStatus = "APPROVED" | "REJECTED" | "OPTION_SELECTED";
+
+export interface ActionDecisionRecord {
+  action_id: string;
+  decision: ActionDecisionStatus;
+  selected_option_id?: string | null;
+  selected_option_label?: string | null;
+  decided_at: string;
+  note?: string | null;
+  applied_summary: string;
+  follow_up_prompt?: string | null;
 }
 
 export interface MapShelterPoint {

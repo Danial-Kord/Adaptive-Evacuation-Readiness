@@ -1,11 +1,14 @@
-import React, { useState } from "react";
-import { ChatPanel } from "./components/ChatPanel";
+import React, { useCallback, useEffect, useState } from "react";
+import { ChatPanel, ExternalDecisionTrigger } from "./components/ChatPanel";
+import { FocusLocationTarget } from "./components/AgentSchemaCards";
 import { DataManagementTab } from "./components/DataManagementTab";
 import { PlanningDashboard, PlanningView } from "./components/PlanningDashboard";
 import { StoryPage } from "./components/StoryPage";
 import { HurricaneGlyph, Theme } from "./components/HeroArt";
 import "./themes.css";
 import { COUNTIES } from "./services/dashboardApi";
+import { buildStarterAgentBriefing } from "./services/agentApi";
+import { ActionDecisionRecord, ActionDecisionStatus, RecommendedAction } from "./types/brief";
 import "./story.css";
 
 // Analyst views (the original workspace) stay available behind "For analysts".
@@ -29,7 +32,57 @@ export const App: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(window.location.search).get("assistant") === "open");
   const [question, setQuestion] = useState<{text: string; id: number; send?: boolean} | null>(null);
   const county = COUNTIES.find(c => c.fips === countyFips)!;
-  const ask = (text: string) => { setQuestion({text, id: Date.now(), send: true}); setChatOpen(true); };
+  const ask = useCallback((text: string) => { setQuestion({text, id: Date.now(), send: true}); setChatOpen(true); }, []);
+
+  // Shared state between the global ChatPanel drawer and PlanningDashboard's CountyMap
+  const [sharedActions, setSharedActions] = useState<RecommendedAction[]>(() => buildStarterAgentBriefing(county.name).actions);
+  const [sharedDecisions, setSharedDecisions] = useState<Record<string, ActionDecisionRecord>>({});
+  const [selectedOptionsByAction, setSelectedOptionsByAction] = useState<Record<string, string>>({});
+  const [activeActionId, setActiveActionId] = useState<string | null>(null);
+  const [focusTarget, setFocusTarget] = useState<FocusLocationTarget | null>(null);
+  const [externalDecisionTrigger, setExternalDecisionTrigger] = useState<ExternalDecisionTrigger | null>(null);
+
+  useEffect(() => {
+    setSharedActions(buildStarterAgentBriefing(county.name).actions);
+    setSharedDecisions({});
+    setSelectedOptionsByAction({});
+    setActiveActionId(null);
+    setFocusTarget(null);
+  }, [county.name]);
+
+  const handleSelectActionOption = useCallback((actionId: string, optionId: string) => {
+    setSelectedOptionsByAction(prev => ({ ...prev, [actionId]: optionId }));
+    setActiveActionId(actionId);
+  }, []);
+
+  const handleFocusLocation = useCallback((target: FocusLocationTarget) => {
+    if (target.actionId) {
+      setActiveActionId(target.actionId);
+    }
+    setFocusTarget({ ...target });
+    setPage("analysts");
+    setView(prev => (prev === "overview" || prev === "priority" || prev === "shelters" ? prev : "overview"));
+  }, []);
+
+  const handleDecideFromMap = useCallback(
+    (
+      action: RecommendedAction,
+      decision: ActionDecisionStatus,
+      selectedOptionId?: string,
+      note?: string,
+      sendFollowUp = false
+    ) => {
+      setExternalDecisionTrigger({
+        id: Date.now(),
+        action,
+        decision,
+        selectedOptionId,
+        note,
+        sendFollowUp,
+      });
+    },
+    []
+  );
 
   return <div className={`app-shell theme-${theme}`}>
     <header className="app-header">
@@ -55,11 +108,44 @@ export const App: React.FC = () => {
           {ANALYST_NAV.map(item => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>{item.label}</button>)}
         </nav>
         {view === "data" ? <main className="explorer-page"><DataManagementTab /></main> :
-          <PlanningDashboard view={view} county={county} mode="live" refresh={0} onPreview={() => {}} hideAssistant />}
+          <PlanningDashboard
+            view={view}
+            county={county}
+            mode="live"
+            refresh={0}
+            onPreview={() => {}}
+            hideAssistant
+            sharedActions={sharedActions}
+            sharedDecisions={sharedDecisions}
+            onSharedDecisionsChange={setSharedDecisions}
+            selectedOptionsByAction={selectedOptionsByAction}
+            onSelectActionOption={handleSelectActionOption}
+            activeActionId={activeActionId}
+            onActiveActionChange={setActiveActionId}
+            focusTarget={focusTarget}
+            onFocusTargetChange={setFocusTarget}
+            onDecideFromMap={handleDecideFromMap}
+            onAskExternal={ask}
+          />}
       </div>}
 
     <aside className={`chat-drawer ${chatOpen ? "open" : ""}`} aria-label="Planning assistant" aria-hidden={!chatOpen}>
-      <ChatPanel key={county.fips} stateCode="FL" county={county.name} compact suggestedQuestion={question} />
+      <ChatPanel
+        key={county.fips}
+        stateCode="FL"
+        county={county.name}
+        compact
+        suggestedQuestion={question}
+        onFocusLocation={handleFocusLocation}
+        sharedDecisions={sharedDecisions}
+        onSharedDecisionsChange={setSharedDecisions}
+        selectedOptionsByAction={selectedOptionsByAction}
+        onSelectActionOption={handleSelectActionOption}
+        activeActionId={activeActionId}
+        onActiveActionChange={setActiveActionId}
+        onActionsSync={setSharedActions}
+        externalDecisionTrigger={externalDecisionTrigger}
+      />
     </aside>
     {!chatOpen && <button className="chat-fab" onClick={() => setChatOpen(true)}>✦ Ask the assistant</button>}
   </div>;
