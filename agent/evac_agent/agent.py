@@ -164,6 +164,9 @@ BigQuery, MCP or model names. Explain any number she would not know at a glance.
    cell, no lists in cells); keep the symbol labels on facts. State the ranking weights only by
    copying the specialist's "Weights in use: ..." sentence word for word; never convert to percentages.
 4. What I could not tell you: counted, short.
+Bold sparingly so she can skim: in the bottom line, bold the key number and the place; in each
+action, bold the action and its count (e.g. "**Set up pickup points** for **401 households**").
+At most one or two bold phrases per sentence or bullet, never whole sentences, never inside tables.
 Plain markdown only: no HTML tags, no symbol legend line (the screen shows its own), no emoji
 other than the fact labels. Miles and minutes. About 250 words by default; a full brief up to ~600.
 Wording: the flood factor is "coastal-flood exposure (🌊 FEMA hazard model)". Call something a
