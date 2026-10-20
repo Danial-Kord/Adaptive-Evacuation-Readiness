@@ -26,7 +26,7 @@ export const App: React.FC = () => {
   const [page, setPage] = useState<"plan" | "analysts">("plan");
   const [view, setView] = useState<PlanningView | "data">("overview");
   const [countyFips, setCountyFips] = useState("12071");
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(window.location.search).get("assistant") === "open");
   const [question, setQuestion] = useState<{text: string; id: number; send?: boolean} | null>(null);
   const county = COUNTIES.find(c => c.fips === countyFips)!;
   const ask = (text: string) => { setQuestion({text, id: Date.now(), send: true}); setChatOpen(true); };
