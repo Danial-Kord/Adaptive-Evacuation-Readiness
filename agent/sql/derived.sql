@@ -99,7 +99,17 @@ ranked AS (
     PERCENT_RANK() OVER (PARTITION BY county_fips ORDER BY hh_no_vehicle) AS pr_no_vehicle,
     PERCENT_RANK() OVER (PARTITION BY county_fips ORDER BY COALESCE(est_mobility_disabled_modeled, 0)) AS pr_mobility,
     PERCENT_RANK() OVER (PARTITION BY county_fips ORDER BY pop_65_plus) AS pr_65_plus,
-    PERCENT_RANK() OVER (PARTITION BY county_fips ORDER BY mobile_homes) AS pr_mobile_homes
+    PERCENT_RANK() OVER (PARTITION BY county_fips ORDER BY mobile_homes) AS pr_mobile_homes,
+    -- Statewide points (0-100) per factor, for "which tracts in Florida" questions. The
+    -- prioritization agent weights these at query time; the manager can change the weights.
+    ROUND(100 * PERCENT_RANK() OVER (ORDER BY hh_no_vehicle)) AS pts_no_car,
+    ROUND(100 * PERCENT_RANK() OVER (ORDER BY pop_65_plus)) AS pts_older,
+    ROUND(100 * PERCENT_RANK() OVER (ORDER BY COALESCE(est_mobility_disabled_modeled, 0))) AS pts_disability,
+    ROUND(100 * PERCENT_RANK() OVER (ORDER BY mobile_homes)) AS pts_mobile_homes,
+    ROUND(100 * PERCENT_RANK() OVER (ORDER BY COALESCE(coastal_flood_share, 0))) AS pts_flood,
+    -- No-car households that also include someone with a mobility disability: nothing is walkable
+    -- for them; they need door-to-door pickup. Modeled (CDC PLACES prevalence x ACS count).
+    ROUND(hh_no_vehicle * COALESCE(pct_mobility, 0) / 100) AS est_no_car_mobility_hh_modeled
   FROM t
 )
 SELECT r.*, c.county_name, d.* EXCEPT (geo_id),

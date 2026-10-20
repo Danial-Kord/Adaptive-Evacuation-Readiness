@@ -80,6 +80,11 @@ def _parse(text: str, supports) -> tuple[dict, set]:
     return ans, grounded
 
 
+def _street_no(addr: str | None) -> str | None:
+    m = re.match(r"\s*(\d+)", addr or "")
+    return m.group(1) if m else None
+
+
 def _similar(a: str, b: str) -> float:
     norm = lambda s: re.sub(r"[^a-z0-9 ]", "", (s or "").lower())
     return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio()
@@ -144,6 +149,11 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
         verdict, action = "CLOSED", "Drop from the plan and find replacement capacity."
     elif same == "no":
         verdict, action = "DIFFERENT_PLACE_AT_ADDRESS", "Registry likely stale: confirm with the operator before relying on it."
+    elif _street_no(s["address"]) and _street_no(ans.get("maps_address")) and \
+            _street_no(s["address"]) != _street_no(ans.get("maps_address")):
+        verdict, action = "FOUND_AT_DIFFERENT_ADDRESS", ("Google Maps found a similarly named place at a different "
+                          "address: the registry building may have closed or moved. Confirm before counting it.")
+        flags.append(f"registry address '{s['address']}' vs Google Maps '{ans.get('maps_address')}'")
     elif name_sim < 0.55:
         verdict, action = "RENAMED_OR_REBRANDED", "Same address, different name: update the registry so a name lookup still finds it."
         flags.append(f"registry name '{s['shelter_name']}' vs Google Maps '{ans.get('maps_name')}'")
@@ -190,6 +200,8 @@ def _verify_one(s: dict, origin: tuple[float, float] | None) -> dict:
         "grounded_fields": sorted(grounded),
         "drive": route,
         "google_maps_sources": sources[:3],
+        "maps_attribution": [f"Google Maps — [{(x['title'] or '').replace(' - Google Maps', '').strip() or 'place'}]({x['uri']})"
+                             for x in sources[:2]],
         "freshness": {"registry": "FEMA NSS, historical record", "google_maps": f"checked live {checked_at}"},
         "checked_at": checked_at,
     }
@@ -262,13 +274,14 @@ def verify_shelters_live(shelter_ids: list[int], origin_tract: str = "") -> dict
     for r in results:
         tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
     return {"results": results, "tally": tally,
-            "attribution_rule": "Show each result's google_maps_sources directly after the sentence it supports, "
-                                "labelled exactly 'Google Maps'."}
+            "attribution_rule": "Copy each result's maps_attribution lines verbatim directly under the content they support."}
 
 
-def verify_pairs(pairs: list[tuple[int, str]]) -> dict[int, dict]:
-    """Verify (shelter_id, origin_tract) pairs in one parallel batch. Used by the brief."""
-    pairs = pairs[:MAX_VERIFY]
+def verify_pairs(pairs: list[tuple[int, str]]) -> dict[tuple[int, str], dict]:
+    """Verify (shelter_id, origin_tract) pairs in one parallel batch, keyed by the pair: a shelter shared
+    by two tracts gets a drive time from each."""
+    # Tract ids end up in SQL text below, so accept digits only.
+    pairs = [(int(i), g if (g or "").isdigit() else "") for i, g in pairs][:MAX_VERIFY]
     if not pairs:
         return {}
     ids = ",".join(str(int(i)) for i, _ in pairs)
@@ -281,4 +294,4 @@ def verify_pairs(pairs: list[tuple[int, str]]) -> dict[int, dict]:
     results = _run_bounded([p for p in pairs if p[0] in shelters],
                            lambda p: {**_verify_one(shelters[p[0]], origins.get(p[1])), "origin_tract": p[1]})
     _store_place_ids(results)
-    return {r["shelter_id"]: r for r in results}
+    return {(r["shelter_id"], r.get("origin_tract") or ""): r for r in results}

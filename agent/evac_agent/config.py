@@ -30,3 +30,28 @@ def table(name: str) -> str:
 # The room shares Gemini capacity; 429s are expected. Back off and retry instead of failing.
 RETRY = dict(attempts=6, initial_delay=2.0, max_delay=30.0, exp_base=2.0, jitter=1.0,
              http_status_codes=[429, 500, 503])
+
+# Fact labels used in every answer.
+LBL = {
+    "fema": "🕰️ FEMA record (historical)",
+    "live": "🟢 Google Maps (live)",
+    "measured": "📊 ACS (measured)",
+    "modeled": "🧮 CDC PLACES (modeled)",
+    "unrecorded": "❓ unrecorded",
+    "county": "🗺️ HHS emPOWER (county-level only)",
+    "straight": "📏 straight-line",
+    "drive": "🚗 Google Maps drive time",
+    "nri": "🌊 FEMA NRI (modeled hazard, tract-level)",
+}
+LEGEND = ("🕰️ historical FEMA record · 🟢 live Google Maps check · 📊 measured (Census) · 🧮 modeled (CDC) · "
+          "🌊 FEMA hazard model · ❓ unrecorded · 🗺️ county-level only · 📏 straight-line · 🚗 Google Maps drive time")
+
+# Default priority weights. No-car households weigh double: the measured (not modeled) signal that a
+# household cannot leave on its own. The manager can change these in conversation.
+DEFAULT_WEIGHTS = {"no_car": 2.0, "older": 1.0, "disability": 1.0, "mobile_homes": 1.0, "flood": 1.0}
+
+# Default reachability rules (manager-adjustable):
+#   has a car -> reachable within CAR_DRIVE_MIN minutes of Google Maps drive time
+#   no car    -> reachable within WALK_MILES straight-line (1 mile ~ 20 min walk carrying a go-bag)
+#   no car + mobility disability -> nothing is walkable; needs door-to-door pickup
+DEFAULT_RULES = {"car_drive_minutes": 30.0, "walk_miles": 1.0}
