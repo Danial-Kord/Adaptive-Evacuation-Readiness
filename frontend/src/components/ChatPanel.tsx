@@ -15,7 +15,7 @@ interface ChatPanelProps {
   stateCode?: string;
   county?: string;
   compact?: boolean;
-  suggestedQuestion?: {text: string; id: number} | null;
+  suggestedQuestion?: {text: string; id: number; send?: boolean} | null;
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -260,6 +260,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     return () => window.clearInterval(id);
   }, [loading]);
   useEffect(() => {
+    if (suggestedQuestion?.send) {
+      handleSend(suggestedQuestion.text); // eslint-disable-line react-hooks/exhaustive-deps
+      return;
+    }
     setInput(suggestedQuestion?.text ?? "");
     if (suggestedQuestion) questionInput.current?.focus();
   }, [suggestedQuestion]);

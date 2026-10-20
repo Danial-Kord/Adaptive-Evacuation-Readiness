@@ -9,7 +9,7 @@ const share = (value: number | null) => value === null ? "Unrecorded" : `${fmt(v
 
 export type PlanningView = "overview" | "priority" | "shelters" | "gaps" | "sources";
 interface Props { view: PlanningView; county: typeof COUNTIES[number]; mode: "live" | "preview"; refresh: number; onPreview: () => void }
-export function PlanningDashboard({ view, county, mode, refresh, onPreview }: Props) {
+export function PlanningDashboard({ view, county, mode, refresh, onPreview, hideAssistant = false }: Props & { hideAssistant?: boolean }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<{kind: "shelter" | "tract"; id: string} | null>(null);
@@ -100,7 +100,7 @@ export function PlanningDashboard({ view, county, mode, refresh, onPreview }: Pr
       </>}
       <footer className="planning-footer">Preparedness planning · historical records · unknown means unrecorded</footer>
     </main>
-    <aside className="planning-assistant" aria-label="Planning assistant"><ChatPanel key={county.fips} stateCode="FL" county={county.name} compact suggestedQuestion={question} />{mode === "preview" && <p className="panel-footnote">Assistant requests still use the live service. Preview rows are not sent as evidence.</p>}</aside>
+    {!hideAssistant && <aside className="planning-assistant" aria-label="Planning assistant"><ChatPanel key={county.fips} stateCode="FL" county={county.name} compact suggestedQuestion={question} />{mode === "preview" && <p className="panel-footnote">Assistant requests still use the live service. Preview rows are not sent as evidence.</p>}</aside>}
   </div>;
 }
 function Metric({icon, title, value, note, amber = false}: {icon: string; title: string; value: string; note: string; amber?: boolean}) {

@@ -10,8 +10,9 @@ RUN npm run build
 
 FROM python:3.11-slim
 WORKDIR /app
-COPY agent/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY agent/requirements.txt ./requirements.txt
+COPY agent/evac_agent/requirements.txt ./requirements-agent.txt
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-agent.txt
 COPY agent/ ./
 COPY --from=ui /ui/dist ./static
 ENV PORT=8080 GOOGLE_CLOUD_LOCATION=global GOOGLE_GENAI_USE_VERTEXAI=True

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from google import genai
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -393,6 +394,58 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         agent_url=DEPLOYED_AGENT_URL,
         grounding_chunks=grounding_chunks,
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# Story endpoints for the main page: the same Python tools the agent uses, called directly, so the
+# page loads in seconds and its numbers match what the assistant says.
+# ---------------------------------------------------------------------------------------------
+class _PageContext:
+    """Stand-in for ADK's ToolContext: default weights and reachability rules."""
+
+    def __init__(self) -> None:
+        self.state: Dict[str, Any] = {}
+
+
+@app.get("/api/story/priorities")
+def story_priorities(county: str = "Lee", top_n: int = 6) -> Dict[str, Any]:
+    from evac_agent.prioritize import rank_priority_tracts
+
+    return rank_priority_tracts(_PageContext(), county, top_n)
+
+
+@app.get("/api/story/destinations")
+def story_destinations(geo_id: str, live: bool = True) -> Dict[str, Any]:
+    from evac_agent.destination import plan_destinations
+
+    if not geo_id.isdigit():
+        raise HTTPException(status_code=400, detail="geo_id must be a census tract id")
+    return plan_destinations(_PageContext(), [geo_id], check_drive_times=live)
+
+
+@app.get("/api/story/quality")
+def story_quality(county: str = "Lee") -> Dict[str, Any]:
+    from evac_agent.quality import data_quality_report
+
+    return data_quality_report(county)
+
+
+@app.get("/api/story/gaps")
+def story_gaps(county: str = "Lee") -> Dict[str, Any]:
+    from evac_agent.data import county_gap_report
+
+    return county_gap_report(county)
+
+
+class _VerifyRequest(BaseModel):
+    shelter_ids: List[int]
+
+
+@app.post("/api/story/verify")
+def story_verify(req: _VerifyRequest) -> Dict[str, Any]:
+    from evac_agent.verify import verify_shelters_live
+
+    return verify_shelters_live(req.shelter_ids[:8])
 
 
 def _sse(payload: Dict[str, Any]) -> str:
