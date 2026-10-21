@@ -84,13 +84,28 @@ export function PlanningDashboard({
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setError(""); setSelected(null); setInspectedPoint(null); setQuestion(null);
-    setInternalActions(buildStarterAgentBriefing(county.name).actions);
-    setInternalDecisions({}); setInternalSelectedOptions({}); setInternalActiveActionId(null); setInternalFocusTarget(null);
     fetchDashboard(county.fips, mode, controller.signal)
       .then(d => { if (!controller.signal.aborted) setData(d); })
       .catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Unable to load county records."); });
     return () => controller.abort();
   }, [county.fips, county.name, mode, refresh, retry]);
+
+  // Sync external or internal focusTarget onto map selection & inspected point (including after county switch)
+  useEffect(() => {
+    if (!focusTarget) return;
+    if (focusTarget.kind === "tract" && focusTarget.id) {
+      setSelected({ kind: "tract", id: focusTarget.id });
+    } else if (focusTarget.kind === "shelter" && focusTarget.id) {
+      setSelected({ kind: "shelter", id: focusTarget.id });
+    }
+    if (typeof focusTarget.latitude === "number" && typeof focusTarget.longitude === "number") {
+      setInspectedPoint({
+        lat: focusTarget.latitude,
+        lng: focusTarget.longitude,
+        label: focusTarget.label,
+      });
+    }
+  }, [focusTarget, data]);
 
   const pendingActions = useMemo(
     () => sharedActions.filter(a => !sharedDecisions[a.action_id]),
@@ -245,7 +260,6 @@ export function PlanningDashboard({
     {!hideAssistant && (
       <aside className="planning-assistant" aria-label="Planning assistant">
         <ChatPanel
-          key={county.fips}
           stateCode="FL"
           county={county.name}
           compact

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { ChatPanel, ExternalDecisionTrigger } from "./components/ChatPanel";
 import { FocusLocationTarget } from "./components/AgentSchemaCards";
 import { DataManagementTab } from "./components/DataManagementTab";
@@ -42,13 +42,16 @@ export const App: React.FC = () => {
   const [focusTarget, setFocusTarget] = useState<FocusLocationTarget | null>(null);
   const [externalDecisionTrigger, setExternalDecisionTrigger] = useState<ExternalDecisionTrigger | null>(null);
 
-  useEffect(() => {
-    setSharedActions(buildStarterAgentBriefing(county.name).actions);
-    setSharedDecisions({});
-    setSelectedOptionsByAction({});
-    setActiveActionId(null);
-    setFocusTarget(null);
-  }, [county.name]);
+  const selectUiCountyByNameOrFips = useCallback((countyNameOrFips: string) => {
+    const cleaned = countyNameOrFips.replace(/\s+County$/i, "").trim().toLowerCase();
+    if (!cleaned) return;
+    const match = COUNTIES.find(
+      c => c.fips === cleaned || c.name.toLowerCase() === cleaned
+    );
+    if (match) {
+      setCountyFips(prev => (prev === match.fips ? prev : match.fips));
+    }
+  }, []);
 
   const handleSelectActionOption = useCallback((actionId: string, optionId: string) => {
     setSelectedOptionsByAction(prev => ({ ...prev, [actionId]: optionId }));
@@ -56,13 +59,16 @@ export const App: React.FC = () => {
   }, []);
 
   const handleFocusLocation = useCallback((target: FocusLocationTarget) => {
+    if (target.county) {
+      selectUiCountyByNameOrFips(target.county);
+    }
     if (target.actionId) {
       setActiveActionId(target.actionId);
     }
     setFocusTarget({ ...target });
     setPage("analysts");
     setView(prev => (prev === "overview" || prev === "priority" || prev === "shelters" ? prev : "overview"));
-  }, []);
+  }, [selectUiCountyByNameOrFips]);
 
   const handleDecideFromMap = useCallback(
     (
@@ -131,12 +137,12 @@ export const App: React.FC = () => {
 
     <aside className={`chat-drawer ${chatOpen ? "open" : ""}`} aria-label="Planning assistant" aria-hidden={!chatOpen}>
       <ChatPanel
-        key={county.fips}
         stateCode="FL"
         county={county.name}
         compact
         suggestedQuestion={question}
         onFocusLocation={handleFocusLocation}
+        onSelectUiCounty={selectUiCountyByNameOrFips}
         sharedDecisions={sharedDecisions}
         onSharedDecisionsChange={setSharedDecisions}
         selectedOptionsByAction={selectedOptionsByAction}

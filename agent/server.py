@@ -1163,10 +1163,11 @@ async def gemini_live_websocket(
     live_instruction = (
         f"{SYSTEM_INSTRUCTION}\n\n"
         f"### VOICE CONVERSATION MODE\n"
-        f"- You are speaking live with the County Emergency Manager for **{county} County, {state}**.\n"
+        f"- You are speaking live with the County Emergency Manager (current default chat county context: **{county} County, {state}**).\n"
+        f"- If the user's speech or message is unclear, garbled (e.g. 'the sink the sink'), a greeting, or not a clear question about evacuation readiness, shelters, or tracts, DO NOT call any tools—just reply briefly in 1-2 friendly sentences asking how you can help.\n"
         f"- Keep your spoken responses clear, natural, and concise (2 to 4 short paragraphs or key bullet points) "
         f"while citing exact tract numbers, shelter names, and counts from your tools.\n"
-        f"- Always use `get_vulnerable_tracts`, `analyze_shelter_readiness`, `get_power_and_medical_gaps`, or "
+        f"- When answering a real evacuation or shelter question, use `get_vulnerable_tracts`, `analyze_shelter_readiness`, `get_power_and_medical_gaps`, or "
         f"`ask_evacuation_specialist` to ground your answers in real federal records and live Google Maps checks.\n"
     )
 

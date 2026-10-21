@@ -585,8 +585,20 @@ export function CountyMap({
       map.flyTo([focusTarget.latitude, focusTarget.longitude], 13, {
         duration: 0.65,
       });
+    } else if (focusTarget.kind === "tract" && focusTarget.id) {
+      const tract = data.tracts.find((t) => t.id === focusTarget.id);
+      if (tract && tract.position) {
+        map.flyTo(tract.position, 13, { duration: 0.65 });
+      }
+    } else if (focusTarget.kind === "shelter" && focusTarget.id) {
+      const shelter = data.shelters.find(
+        (s) => s.id === focusTarget.id || s.label.toLowerCase() === focusTarget.id?.toLowerCase()
+      );
+      if (shelter && shelter.position) {
+        map.flyTo(shelter.position, 13, { duration: 0.65 });
+      }
     }
-  }, [focusTarget]);
+  }, [focusTarget, data]);
 
   const handleZoomActiveFromTo = () => {
     const map = mapRef.current;

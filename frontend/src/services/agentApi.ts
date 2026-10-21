@@ -166,10 +166,15 @@ export function ensureStructuredAgentPayload(
   const actions: RecommendedAction[] = [...(res.recommended_actions || [])];
   const outputs: AgentSchemaOutput[] = [...(res.agent_outputs || [])];
   const tools = res.tools_called || [];
-  const replyLower = (res.reply || "").toLowerCase();
 
   if (actions.length > 0) {
     return { ...res, recommended_actions: actions, agent_outputs: outputs };
+  }
+
+  // Never attach fallback action cards or structured reports when the agent answered conversationally
+  // without calling any specialist tools (e.g., greetings, clarifications, or unclear input).
+  if (tools.length === 0 && outputs.length === 0) {
+    return { ...res, recommended_actions: [], agent_outputs: [] };
   }
 
   // Synthesize from structured `outputs` if present
@@ -305,26 +310,22 @@ export function ensureStructuredAgentPayload(
     }
   }
 
-  // If still empty (e.g., remote agent answered from coordinator or subagent without exposing inner tool event),
-  // synthesize context-appropriate actions from the tools called and reply text so the user always gets
-  // interactive Approve / Reject / Select-between-options controls matching the active specialist agent!
-  if (actions.length === 0) {
+  // If a specialist tool was called on a remote agent that didn't expose inner tool outputs,
+  // synthesize context-appropriate actions only for the specialist tools that actually ran.
+  if (actions.length === 0 && tools.length > 0) {
     const starter = buildStarterAgentBriefing(county);
-    const isPriority =
-      tools.some((t) => t.includes("priorit") || t.includes("tract") || t.includes("equity")) ||
-      replyLower.includes("tract") ||
-      replyLower.includes("no-vehicle") ||
-      replyLower.includes("priority");
-    const isDest =
-      tools.some((t) => t.includes("destination") || t.includes("reachability")) ||
-      replyLower.includes("drive") ||
-      replyLower.includes("routing") ||
-      replyLower.includes("destination");
+    const isPriority = tools.some(
+      (t) => t.includes("priorit") || t.includes("tract") || t.includes("equity")
+    );
+    const isDest = tools.some(
+      (t) => t.includes("destination") || t.includes("reachability")
+    );
     const isVerify =
       tools.some((t) => t.includes("verify") || t.includes("quality") || t.includes("maps")) ||
-      (res.grounding_chunks && res.grounding_chunks.length > 0) ||
-      replyLower.includes("google maps") ||
-      replyLower.includes("verified");
+      Boolean(res.grounding_chunks && res.grounding_chunks.length > 0);
+    const isGapOrShelter = tools.some(
+      (t) => t.includes("gap") || t.includes("shelter") || t.includes("sql")
+    );
 
     if (isPriority) {
       actions.push(...starter.actions.filter((a) => a.source_agent === "prioritization_agent"));
@@ -344,10 +345,14 @@ export function ensureStructuredAgentPayload(
         outputs.push(...starter.outputs.filter((o) => o.agent_name === "verification_agent"));
       }
     }
-    if (actions.length === 0) {
-      actions.push(...starter.actions.slice(0, 3));
+    if (isGapOrShelter && actions.length === 0) {
+      actions.push(
+        ...starter.actions.filter((a) => a.source_agent === "evac_readiness_coordinator")
+      );
       if (outputs.length === 0) {
-        outputs.push(...starter.outputs.slice(0, 2));
+        outputs.push(
+          ...starter.outputs.filter((o) => o.agent_name === "evac_readiness_coordinator")
+        );
       }
     }
   }
@@ -968,6 +973,15 @@ export async function submitActionDecision(params: {
 
 export type AgentProgress = { type: "step" | "step_done"; tool: string };
 
+function formatContextualUserMessage(message: string, county: string, state: string): string {
+  return (
+    `[Chat context note: Default county is ${county} County, ${state}. ` +
+    `Use ${county} County ONLY if the user asks an evacuation, shelter, tract, or readiness question without naming a county. ` +
+    `If the user's message is unclear, garbled, a greeting, or off-topic, do NOT call any tools or output a county brief—just reply briefly in 1-2 sentences asking how you can help.]\n` +
+    `User message: ${message}`
+  );
+}
+
 /**
  * Streams progress from /api/chat/stream so the UI can show what the agent is doing, then resolves
  * with the final answer. Falls back to the one-shot sendAgentMessage if streaming is unavailable.
@@ -979,7 +993,7 @@ export async function streamAgentMessage(
   sessionId: string,
   onProgress: (p: AgentProgress) => void
 ): Promise<ChatResponse> {
-  const contextualMessage = `[Pre-season planning context: ${county} County, ${state}] ${message}`;
+  const contextualMessage = formatContextualUserMessage(message, county, state);
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/api/chat/stream`, {
@@ -1033,7 +1047,7 @@ export async function sendAgentMessage(
   county: string,
   sessionId = "manager-session-01"
 ): Promise<ChatResponse> {
-  const contextualMessage = `[Pre-season planning context: ${county} County, ${state}] ${message}`;
+  const contextualMessage = formatContextualUserMessage(message, county, state);
   // 1. Try local FastAPI backend (/api/chat) which proxies to Cloud Run evac_agent
   try {
     const response = await fetch(`${API_BASE}/api/chat`, {

@@ -24,6 +24,7 @@ import {
   RecommendedActionCard,
 } from "./AgentSchemaCards";
 import { DashboardData } from "../services/dashboardData";
+import { COUNTIES } from "../services/dashboardApi";
 import { MapsAttribution } from "./MapsAttribution";
 
 export interface ExternalDecisionTrigger {
@@ -49,6 +50,7 @@ interface ChatMessage {
 interface ChatPanelProps {
   stateCode?: string;
   county?: string;
+  onSelectUiCounty?: (countyNameOrFips: string) => void;
   compact?: boolean;
   suggestedQuestion?: { text: string; id: number; send?: boolean } | null;
   onFocusLocation?: (target: FocusLocationTarget) => void;
@@ -287,6 +289,7 @@ function buildInitialMessages(county: string, stateCode: string): ChatMessage[] 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   stateCode = "FL",
   county = "Lee",
+  onSelectUiCounty,
   compact = false,
   suggestedQuestion,
   onFocusLocation,
@@ -304,12 +307,51 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const liveSessionRef = useRef<GeminiLiveSession | null>(null);
   const lastExternalDecisionId = useRef<number | null>(null);
 
+  // Persistent chat county context (selectable via dropdown inside the chat, independent of the UI county selector)
+  const [chatCounty, setChatCounty] = useState<string>(() => county || "Lee");
+
   const [sessionId, setSessionId] = useState<string>(
     () => `web-session-${crypto.randomUUID()}`
   );
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    buildInitialMessages(county, stateCode)
+    buildInitialMessages(county || "Lee", stateCode)
   );
+
+  const handleChatCountyChange = (nextCounty: string) => {
+    setChatCounty(nextCounty);
+    setMessages((prev) => {
+      if (prev.length === 1 && prev[0].id.startsWith("starter-")) {
+        return buildInitialMessages(nextCounty, stateCode);
+      }
+      return prev;
+    });
+  };
+
+  const handleFocusFromChat = (
+    target: FocusLocationTarget,
+    fallbackActionId?: string
+  ) => {
+    const fipsMatch = target.id
+      ? COUNTIES.find((c) => String(target.id).startsWith(c.fips))
+      : undefined;
+    const resolvedCounty =
+      fipsMatch?.name ||
+      (target.county
+        ? target.county.replace(/\s+County$/i, "").trim()
+        : "") ||
+      chatCounty;
+
+    if (target.actionId) {
+      onActiveActionChange?.(target.actionId);
+    } else if (fallbackActionId) {
+      onActiveActionChange?.(fallbackActionId);
+    }
+    onSelectUiCounty?.(resolvedCounty);
+    onFocusLocation?.({
+      ...target,
+      county: resolvedCounty,
+    });
+  };
 
   // Widget UI state
   const [activeTab, setActiveTab] = useState<WidgetTab>("chat");
@@ -427,8 +469,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [loading, voiceStatus]);
 
   useEffect(() => {
-    liveSessionRef.current?.updateContext(county, stateCode, sessionId);
-  }, [county, stateCode, sessionId]);
+    liveSessionRef.current?.updateContext(chatCounty, stateCode, sessionId);
+  }, [chatCounty, stateCode, sessionId]);
 
   useEffect(() => {
     return () => {
@@ -455,7 +497,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (liveSessionRef.current) {
       liveSessionRef.current.stop();
     }
-    const session = new GeminiLiveSession(county, stateCode, sessionId, {
+    const session = new GeminiLiveSession(chatCounty, stateCode, sessionId, {
       onStatusChange: (status, detail) => {
         setVoiceStatus(status);
         if (detail) setVoiceDetail(detail);
@@ -567,7 +609,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     updateDecisions({});
     const nextSession = `web-session-${crypto.randomUUID()}`;
     setSessionId(nextSession);
-    setMessages(buildInitialMessages(county, stateCode));
+    setMessages(buildInitialMessages(chatCounty, stateCode));
   };
 
   const handleSend = async (promptText: string) => {
@@ -596,7 +638,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       const res = await streamAgentMessage(
         query,
         stateCode,
-        county,
+        chatCounty,
         sessionId,
         (p: AgentProgress) => {
           setSteps((prev) => {
@@ -677,7 +719,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         selected_option_id: selectedOptionId,
         selected_option_label: selectedOpt?.label,
         note,
-        county,
+        county: chatCounty,
         session_id: sessionId,
         action,
       });
@@ -748,7 +790,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <span className="chat-widget-launcher-text">
             <strong>Evacuation Agent Widget</strong>
             <small>
-              {county} County · {pendingActionsCount} pending{" "}
+              {chatCounty} County · {pendingActionsCount} pending{" "}
               {pendingActionsCount === 1 ? "approval" : "approvals"}
             </small>
           </span>
@@ -782,10 +824,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
             <p className="admin-subtitle">
               {compact ? (
-                `Ask anything about ${county} County evacuation routes, shelters, or readiness.`
+                `Ask anything about ${chatCounty} County evacuation routes, shelters, or readiness.`
               ) : (
                 <>
-                  Ask anything about {county} County readiness · Session:{" "}
+                  Ask anything about {chatCounty} County readiness · Session:{" "}
                   <code>{sessionId}</code>
                 </>
               )}
@@ -793,6 +835,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
 
           <div className="chat-header-actions">
+            <label
+              className="chat-county-context-select"
+              title="Select county context for this chat conversation (persists across turns)"
+            >
+              <span className="chat-county-context-label">Chat County:</span>
+              <select
+                aria-label="Chat county context"
+                value={chatCounty}
+                onChange={(e) => handleChatCountyChange(e.target.value)}
+                disabled={loading}
+              >
+                {COUNTIES.map((c) => (
+                  <option key={c.fips} value={c.name}>
+                    {c.name} County, {stateCode}
+                  </option>
+                ))}
+              </select>
+            </label>
             {!compact && (
               <a
                 href={`${DEPLOYED_CLOUD_RUN_URL}/dev-ui/`}
@@ -939,7 +999,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                           <AgentSchemaOutputView
                             key={`${m.id}-schema-${idx}`}
                             output={out}
-                            onFocusLocation={onFocusLocation}
+                            onFocusLocation={(target) => handleFocusFromChat(target)}
                             defaultExpanded={idx === 0}
                           />
                         ))}
@@ -999,14 +1059,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                 selectedOptionId={effectiveSelectedOptions[act.action_id]}
                                 onSelectOption={handleSelectOption}
                                 onDecide={handleActionDecision}
-                                onFocusLocation={(target) => {
-                                  if (target.actionId) {
-                                    onActiveActionChange?.(target.actionId);
-                                  } else {
-                                    onActiveActionChange?.(act.action_id);
-                                  }
-                                  onFocusLocation?.(target);
-                                }}
+                                onFocusLocation={(target) =>
+                                  handleFocusFromChat(target, act.action_id)
+                                }
                                 dashboardData={dashboardData}
                                 isFocusedOnMap={activeActionId === act.action_id}
                                 busy={decidingActionId === act.action_id || loading}
@@ -1131,14 +1186,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   selectedOptionId={effectiveSelectedOptions[act.action_id]}
                   onSelectOption={handleSelectOption}
                   onDecide={handleActionDecision}
-                  onFocusLocation={(target) => {
-                    if (target.actionId) {
-                      onActiveActionChange?.(target.actionId);
-                    } else {
-                      onActiveActionChange?.(act.action_id);
-                    }
-                    onFocusLocation?.(target);
-                  }}
+                  onFocusLocation={(target) =>
+                    handleFocusFromChat(target, act.action_id)
+                  }
                   dashboardData={dashboardData}
                   isFocusedOnMap={activeActionId === act.action_id}
                   busy={decidingActionId === act.action_id || loading}
@@ -1187,7 +1237,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <AgentSchemaOutputView
                   key={`inspector-${idx}-${out.schema_name}`}
                   output={out}
-                  onFocusLocation={onFocusLocation}
+                  onFocusLocation={(target) => handleFocusFromChat(target)}
                   defaultExpanded={true}
                 />
               ))
@@ -1265,7 +1315,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                           ? "Speaking…"
                           : voiceStatus === "thinking"
                           ? "Checking county data & Google Maps…"
-                          : `Listening — ask about ${county} County`}
+                          : `Listening — ask about ${chatCounty} County`}
                       </strong>
                     </div>
                     <p className="voice-status-sub">
@@ -1317,12 +1367,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             title={
               isVoiceActive
                 ? "End Gemini Live voice conversation"
-                : `Start a live voice conversation about ${county} County`
+                : `Start a live voice conversation about ${chatCounty} County`
             }
             aria-label={
               isVoiceActive
                 ? "End Gemini Live voice conversation"
-                : `Start Gemini Live voice conversation for ${county} County`
+                : `Start Gemini Live voice conversation for ${chatCounty} County`
             }
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
@@ -1333,11 +1383,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <input
             type="text"
             className="chat-text-input"
-            placeholder={`Message the ${county} County assistant…`}
+            placeholder={`Message the ${chatCounty} County assistant…`}
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             disabled={loading}
-            aria-label={`Ask the ${county} County planning assistant`}
+            aria-label={`Ask the ${chatCounty} County planning assistant`}
           />
           <button
             type="submit"

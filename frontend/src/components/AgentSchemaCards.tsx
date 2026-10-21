@@ -13,6 +13,7 @@ export interface FocusLocationTarget {
   kind: "tract" | "shelter" | "coords" | "action";
   id?: string;
   actionId?: string;
+  county?: string;
   label?: string;
   latitude?: number;
   longitude?: number;
@@ -236,12 +237,14 @@ function extractFocusFromLocation(
   if (!loc) return null;
   const lat = typeof loc.lat === "number" ? loc.lat : undefined;
   const lon = typeof loc.lon === "number" ? loc.lon : undefined;
+  const county = loc.county ? String(loc.county).replace(/\s+County$/i, "").trim() : undefined;
 
   if (loc.tract_geoid) {
     return {
       kind: "tract",
       id: String(loc.tract_geoid),
       actionId,
+      county,
       label: loc.label || `Tract ${loc.tract_geoid}`,
       latitude: lat,
       longitude: lon,
@@ -252,6 +255,7 @@ function extractFocusFromLocation(
       kind: "shelter",
       id: String(loc.shelter_id),
       actionId,
+      county,
       label: loc.label || `Shelter ${loc.shelter_id}`,
       latitude: lat,
       longitude: lon,
@@ -261,6 +265,7 @@ function extractFocusFromLocation(
     return {
       kind: "coords",
       actionId,
+      county,
       label: loc.label || "Map Location",
       latitude: lat,
       longitude: lon,
@@ -343,6 +348,15 @@ export const RecommendedActionCard: React.FC<RecommendedActionCardProps> = ({
 
   const selectedOption = options.find((o) => o.option_id === activeOptionId);
   const isDecided = Boolean(decision) && !editingDecision;
+  const actionCounty = (
+    selectedOption?.location?.county ||
+    action.location?.county ||
+    action.from_location?.county ||
+    action.to_location?.county ||
+    ""
+  )
+    .replace(/\s+County$/i, "")
+    .trim() || undefined;
 
   const handleOptionChange = (optionId: string) => {
     setInternalOptionId(optionId);
@@ -352,6 +366,7 @@ export const RecommendedActionCard: React.FC<RecommendedActionCardProps> = ({
       onFocusLocation({
         kind: "action",
         actionId: action.action_id,
+        county: actionCounty,
         label: action.title,
         fromLat: nextFromTo.from?.lat,
         fromLng: nextFromTo.from?.lng,
@@ -368,6 +383,7 @@ export const RecommendedActionCard: React.FC<RecommendedActionCardProps> = ({
     onFocusLocation({
       kind: "action",
       actionId: action.action_id,
+      county: actionCounty,
       id:
         resolvedFromTo.to?.id ||
         resolvedFromTo.from?.id ||
@@ -758,6 +774,10 @@ export const AgentSchemaOutputView: React.FC<AgentSchemaOutputViewProps> = ({
   const [expanded, setExpanded] = useState<boolean>(defaultExpanded);
   const agentMeta = getAgentMeta(output.agent_name);
   const data = output.data || {};
+  const outputCounty =
+    typeof data.county === "string"
+      ? data.county.replace(/\s+County$/i, "").trim()
+      : undefined;
 
   const renderSchemaBody = () => {
     switch (output.schema_name) {
@@ -815,6 +835,10 @@ export const AgentSchemaOutputView: React.FC<AgentSchemaOutputViewProps> = ({
                           onFocusLocation({
                             kind: "tract",
                             id: String(geoid),
+                            county:
+                              (typeof t.county_name === "string"
+                                ? t.county_name.replace(/\s+County$/i, "").trim()
+                                : undefined) || outputCounty,
                             label: `Tract ${geoid}`,
                             latitude: typeof t.lat === "number" ? t.lat : undefined,
                             longitude: typeof t.lon === "number" ? t.lon : undefined,
@@ -897,6 +921,7 @@ export const AgentSchemaOutputView: React.FC<AgentSchemaOutputViewProps> = ({
                             onFocusLocation({
                               kind: "action",
                               id: String(p.tract_geoid),
+                              county: outputCounty,
                               label: `Tract ${p.tract_geoid} → ${
                                 primary?.shelter_name || primary?.name || "Shelter"
                               }`,
@@ -980,6 +1005,7 @@ export const AgentSchemaOutputView: React.FC<AgentSchemaOutputViewProps> = ({
                             onFocusLocation({
                               kind: "shelter",
                               id: String(r.shelter_id),
+                              county: outputCounty,
                               label: name,
                             })
                           }
