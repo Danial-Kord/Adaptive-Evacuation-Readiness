@@ -818,6 +818,7 @@ except Exception:
     _sys.modules["evac_agent"] = _evac_pkg
 
 from evac_agent import data as _evac_data  # noqa: E402
+from evac_agent import config as _evac_config  # noqa: E402
 from evac_agent import destination as _evac_destination  # noqa: E402
 from evac_agent import prioritize as _evac_prioritize  # noqa: E402
 from evac_agent import quality as _evac_quality  # noqa: E402
@@ -941,23 +942,20 @@ _LIVE_TOOL_DECLARATIONS = [
     types.FunctionDeclaration(
         name="get_vulnerable_tracts",
         description=(
-            "Rank census tracts in a county by self-evacuation vulnerability (no-vehicle households, "
-            "65+, disability, mobility, mobile homes) and straight-line distance to nearest shelters."
+            "Rank neighborhoods (census tracts) in a county by who would struggle to leave: the same 0-100 "
+            "priority points and main need shown on the dashboard (no-car households count double; 65+, "
+            "mobility disability, mobile homes and coastal-flood exposure once). Only evacuation-zone tracts."
         ),
         parameters=types.Schema(
             type="OBJECT",
             properties={
                 "county_name_or_fips": types.Schema(
                     type="STRING",
-                    description="County name (e.g. 'Lee', 'Miami-Dade', 'Pinellas') or 5-digit county FIPS.",
-                ),
-                "max_reachable_km": types.Schema(
-                    type="NUMBER",
-                    description="Distance threshold in km (default 10.0).",
+                    description="County name (e.g. 'Lee', 'Miami-Dade', 'Pinellas').",
                 ),
                 "limit": types.Schema(
                     type="INTEGER",
-                    description="Max number of priority tracts to return (default 10).",
+                    description="Max number of priority tracts to return (default 5).",
                 ),
             },
             required=["county_name_or_fips"],
@@ -1029,6 +1027,24 @@ _LIVE_TOOL_DECLARATIONS = [
 ]
 
 
+def _shelter_flood_ground(county: str) -> Dict[str, Any]:
+    """Pre-landfall shelters on high coastal-flood ground: the dashboard's figure, not the registry's surge flag."""
+    try:
+        fips, _ = _evac_data.resolve_county(county)
+        row = _evac_data._rows(f"""
+            SELECT COUNTIF(pre_landfall) pre_landfall_shelters,
+              COUNTIF(pre_landfall AND site_in_flood_hazard) pre_landfall_on_high_coastal_flood_ground
+            FROM {_evac_config.table('shelters_enriched')} WHERE county_fips=@fips""", fips=fips)[0]
+    except Exception as exc:  # the rest of the answer still stands without this figure
+        return {"error": str(exc)[:200]}
+    on, pre = row["pre_landfall_on_high_coastal_flood_ground"], row["pre_landfall_shelters"]
+    return {**row, "say_it_like": (
+        f"{on} of the {pre} evacuation shelters (the ones open before landfall) sit on high coastal-flood ground, "
+        "meaning at least a quarter of the surrounding neighborhood is exposed to coastal flooding (FEMA risk data)."),
+        "note": "The registry's in_surge_slosh_area and in_100_yr_floodplain flags are mostly left blank, so never "
+                "present them as the flood-risk count. The other registered shelters are only used after the storm."}
+
+
 async def _execute_live_tool(
     name: str,
     args: Dict[str, Any],
@@ -1059,21 +1075,31 @@ async def _execute_live_tool(
 
     try:
         if name == "get_vulnerable_tracts":
-            res = await asyncio.to_thread(
-                get_vulnerable_tracts,
-                county_name_or_fips=county_arg,
-                max_reachable_km=float(args.get("max_reachable_km", 10.0)),
-                limit=int(args.get("limit", 10)),
+            # Same ranking as the dashboard and the text agent, so voice and page agree.
+            county_name = (default_county or "Lee") if county_arg.isdigit() else county_arg
+            ranked = await asyncio.to_thread(
+                _evac_prioritize.rank_priority_tracts, _PageContext(), county_name, int(args.get("limit", 5))
             )
-            if isinstance(res, dict) and res.get("status") == "success":
-                out = AgentSchemaOutput(
-                    agent_name="prioritization_agent",
-                    tool_name="get_vulnerable_tracts",
-                    schema_name="RankPriorityTractsOutput",
-                    data=res,
-                )
-                turn_outputs.append(out)
-                _synthesize_fallback_actions(county_arg, turn_tools, [out], turn_grounding, turn_actions)
+            turn_outputs.append(AgentSchemaOutput(
+                agent_name="prioritization_agent",
+                tool_name="rank_priority_tracts",
+                schema_name="RankPriorityTractsOutput",
+                data=ranked,
+            ))
+            _extract_recommended_actions_recursive(ranked, turn_actions)
+            res = {
+                "status": "success",
+                "scope": ranked.get("scope"),
+                "weights_sentence": ranked.get("weights_sentence"),
+                "evacuation_zone_totals": ranked.get("evacuation_zone_totals"),
+                "how_points_work": ranked.get("how_points_work"),
+                "tracts": [
+                    {**{k: t.get(k) for k in ("place", "main_need", "hh_no_vehicle", "pop_65_plus", "mobile_homes",
+                                              "mobility_disabled_modeled", "pct_coastal_flood_exposed")},
+                     "priority_points_out_of_100": round(t.get("priority_points") or 0)}
+                    for t in ranked.get("tracts") or []
+                ],
+            }
         elif name == "analyze_shelter_readiness":
             res = await asyncio.to_thread(
                 analyze_shelter_readiness,
@@ -1081,6 +1107,7 @@ async def _execute_live_tool(
                 limit=int(args.get("limit", 15)),
             )
             if isinstance(res, dict) and res.get("status") == "success":
+                res["flood_ground"] = await asyncio.to_thread(_shelter_flood_ground, county_arg)
                 out = AgentSchemaOutput(
                     agent_name="evac_readiness_coordinator",
                     tool_name="analyze_shelter_readiness",
@@ -1096,6 +1123,12 @@ async def _execute_live_tool(
                 limit=int(args.get("limit", 10)),
             )
             if isinstance(res, dict) and res.get("status") == "success":
+                summary = (res.get("empower_county_summary") or [{}])[0]
+                if summary.get("power_dependent_dme") is not None:
+                    res["say_it_like"] = (
+                        f"{int(summary['power_dependent_dme']):,} people on Medicare in this county rely on "
+                        "electricity-dependent medical equipment at home (HHS emPOWER). It is a county-level count, "
+                        "never by neighborhood. The nursing homes listed are a separate group.")
                 out = AgentSchemaOutput(
                     agent_name="evac_readiness_coordinator",
                     tool_name="get_power_and_medical_gaps",
@@ -1165,7 +1198,12 @@ async def gemini_live_websocket(
         f"### VOICE CONVERSATION MODE\n"
         f"- You are speaking live with the County Emergency Manager for **{county} County, {state}**.\n"
         f"- Keep your spoken responses clear, natural, and concise (2 to 4 short paragraphs or key bullet points) "
-        f"while citing exact tract numbers, shelter names, and counts from your tools.\n"
+        f"while citing exact shelter names and counts from your tools.\n"
+        f"- For who to prioritize, use `get_vulnerable_tracts` and keep its order: name each neighborhood by "
+        f"its nearby city (e.g. 'near Bonita Springs'), give its priority points rounded to a whole number out "
+        f"of 100 (as the dashboard shows them) and its main need. "
+        f"Never re-rank by a single factor.\n"
+        f"- When a tool result has `say_it_like`, use that wording for the number.\n"
         f"- Always use `get_vulnerable_tracts`, `analyze_shelter_readiness`, `get_power_and_medical_gaps`, or "
         f"`ask_evacuation_specialist` to ground your answers in real federal records and live Google Maps checks.\n"
     )
