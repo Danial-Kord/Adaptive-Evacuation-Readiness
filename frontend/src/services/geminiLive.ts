@@ -224,7 +224,7 @@ export class GeminiLiveSession {
 
       const timeoutId = window.setTimeout(() => {
         finish(false);
-      }, 4500);
+      }, 12000);
 
       try {
         const url = buildLiveWsUrl(this.county, this.stateCode, this.sessionId);

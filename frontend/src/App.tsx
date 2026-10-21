@@ -7,7 +7,6 @@ import { StoryPage } from "./components/StoryPage";
 import { HurricaneGlyph, Theme } from "./components/HeroArt";
 import "./themes.css";
 import { COUNTIES } from "./services/dashboardApi";
-import { buildStarterAgentBriefing } from "./services/agentApi";
 import { ActionDecisionRecord, ActionDecisionStatus, RecommendedAction } from "./types/brief";
 import "./story.css";
 
@@ -35,7 +34,7 @@ export const App: React.FC = () => {
   const ask = useCallback((text: string) => { setQuestion({text, id: Date.now(), send: true}); setChatOpen(true); }, []);
 
   // Shared state between the global ChatPanel drawer and PlanningDashboard's CountyMap
-  const [sharedActions, setSharedActions] = useState<RecommendedAction[]>(() => buildStarterAgentBriefing(county.name).actions);
+  const [sharedActions, setSharedActions] = useState<RecommendedAction[]>([]);
   const [sharedDecisions, setSharedDecisions] = useState<Record<string, ActionDecisionRecord>>({});
   const [selectedOptionsByAction, setSelectedOptionsByAction] = useState<Record<string, string>>({});
   const [activeActionId, setActiveActionId] = useState<string | null>(null);
@@ -43,7 +42,7 @@ export const App: React.FC = () => {
   const [externalDecisionTrigger, setExternalDecisionTrigger] = useState<ExternalDecisionTrigger | null>(null);
 
   useEffect(() => {
-    setSharedActions(buildStarterAgentBriefing(county.name).actions);
+    setSharedActions([]);
     setSharedDecisions({});
     setSelectedOptionsByAction({});
     setActiveActionId(null);

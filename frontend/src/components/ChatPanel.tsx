@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AgentProgress,
-  buildStarterAgentBriefing,
   DEPLOYED_CLOUD_RUN_URL,
   streamAgentMessage,
   submitActionDecision,
@@ -270,7 +269,6 @@ function renderMarkdownBlocks(markdown: string, stacked = false): React.ReactNod
 }
 
 function buildInitialMessages(county: string, stateCode: string): ChatMessage[] {
-  const starter = buildStarterAgentBriefing(county);
   return [
     {
       id: `starter-${county}-${stateCode}`,
@@ -278,8 +276,6 @@ function buildInitialMessages(county: string, stateCode: string): ChatMessage[] 
       text:
         `Hi! I'm your **${county} County, ${stateCode}** evacuation planning assistant.\n\n` +
         `Ask me anything in plain language — or use **Live Voice** — about neighborhood evacuation priorities, shelter routing and drive times, or live Google Maps facility checks.`,
-      recommended_actions: starter.actions,
-      agent_outputs: starter.outputs,
     },
   ];
 }

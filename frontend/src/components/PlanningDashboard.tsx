@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchDashboard, COUNTIES } from "../services/dashboardApi";
 import { DashboardData, displayNumber as fmt, DashboardShelter, DashboardTract } from "../services/dashboardData";
-import { buildStarterAgentBriefing } from "../services/agentApi";
 import { ActionDecisionRecord, ActionDecisionStatus, RecommendedAction } from "../types/brief";
 import { CountyMap } from "./CountyMap";
 import { ChatPanel, ExternalDecisionTrigger } from "./ChatPanel";
@@ -65,7 +64,7 @@ export function PlanningDashboard({
   const [retry, setRetry] = useState(0);
 
   // Shared state between CountyMap and ChatPanel so actions, option selections, FROM->TO zoom, and Approve/Reject dismissals stay 100% synchronized
-  const [internalActions, setInternalActions] = useState<RecommendedAction[]>(() => buildStarterAgentBriefing(county.name).actions);
+  const [internalActions, setInternalActions] = useState<RecommendedAction[]>([]);
   const [internalDecisions, setInternalDecisions] = useState<Record<string, ActionDecisionRecord>>({});
   const [internalSelectedOptions, setInternalSelectedOptions] = useState<Record<string, string>>({});
   const [internalActiveActionId, setInternalActiveActionId] = useState<string | null>(null);
@@ -84,7 +83,7 @@ export function PlanningDashboard({
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setError(""); setSelected(null); setInspectedPoint(null); setQuestion(null);
-    setInternalActions(buildStarterAgentBriefing(county.name).actions);
+    setInternalActions([]);
     setInternalDecisions({}); setInternalSelectedOptions({}); setInternalActiveActionId(null); setInternalFocusTarget(null);
     fetchDashboard(county.fips, mode, controller.signal)
       .then(d => { if (!controller.signal.aborted) setData(d); })
